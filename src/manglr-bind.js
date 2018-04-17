@@ -6,10 +6,14 @@
   var std_attr = new RegExp("^http-equiv$|^data-.*|^aria-.*");
   var prefix_re;
   var hasOwn = Object.prototype.hasOwnProperty;
-  var tags = {};
-  var directives = {};
-  var prefixes = {};
+  var nextSid = 1;
+  var tags = {};       // registry.
+  var directives = {}; // registry.
+  var prefixes = {};   // registry.
   var prefixes_dirty = true;
+  var root_component = { id:'c0', tags:{} };
+  var components = { c0:root_component }; // index.
+  var has_loaded = false;
 
   // ---- tag handlers ----
 
@@ -35,12 +39,17 @@
   // ---- error reporting ----
 
   var error_msgs = [
-    'manglr-bind.js must be loaded first!',
-    'no handler registered for custom attribute "@1"',
-    'error thrown in handler "@1":',
-    'duplicate tag "@1" registered:',
-    'duplicate directive "@1" registered:',
-    'duplicate prefix "@1" registered:',
+    'manglr-bind.js must be loaded first!',                                  // 0
+    'no handler registered for custom attribute "@1"',                       // 1
+    'error thrown in handler "@1":',                                         // 2
+    'duplicate tag "@1" registered:',                                        // 3
+    'duplicate directive "@1" registered:',                                  // 4
+    'duplicate prefix "@1" registered:',                                     // 5
+    '[internal] parent component id "@1" is missing from registry',          // 6
+    '[internal] parent component does not have an id',                       // 7
+    'component must have a "tag" attribute',                                 // 8
+    'duplicate component tag name "@1" declared',                            // 9
+    'tags and directives (@1) must be registered before DOMContentLoaded',   // 10
   ];
 
   function error(node, n, name, err) {
@@ -48,8 +57,6 @@
   }
 
   // ---- scopes ----
-
-  var nextSid = 1;
 
   function Scope() {
     return {id:'s'+(nextSid++), com:{}};
@@ -72,8 +79,59 @@
   function bind_text_node(node, contents, scope) {
   }
 
-  function bind_to_dom(node, scope) {
-    if (prefixes_dirty) rebuild_prefixes();
+  function component_name_used(name, pid) {
+    // compiler: assert that components do not shadow other components.
+    var parent;
+    while (pid && (parent = components[pid])) {
+      if (parent.tags[name]) return true;
+      pid = parent.pid;
+    }
+    return false;
+  }
+
+  function find_components(top) {
+    // NB. node cannot be a component itself.
+    var defs = top.getElementsByTagName('component');
+    var remove = [];
+    for (var i=0,n=defs.length; i<n; i++) {
+      var defn = defs[i];
+      remove.push(defn);
+      if (defn[is_scope]) continue; // DOM node is already controlled by a scope.
+      // assign each component a unique id.
+      var sid = 'c'+(nextSid++);
+      defn[is_scope] = sid;
+      // find the enclosing parent component.
+      var parent = defn.parentNode;
+      var into = root_component; // enclosing parent if none found.
+      while (parent !== top) {
+        if (parent.nodeName.toLowerCase() === 'component') {
+          // found an enclosing component.
+          var pid = parent[is_scope] || error(parent, 7, ''); // missing id.
+          into = pid ? (components[pid] || error(parent, 6, pid)) : null; // id not in registry.
+          break;
+        }
+        parent = parent.parentNode;
+      }
+      var tag = defn.getAttribute('tag') || error(defn, 8, ''); // missing attribute.
+      if (tag && into) {
+        // index the component so we can find it for nested components.
+        var comp = { id:sid, tag:tag, tags:{}, pid:into.id, dom:defn };
+        components[sid] = comp;
+        // register the component in its parent by custom-tag name.
+        var tag_set = into.tags;
+        if (component_name_used(tag, into.id)) error(defn, 9, tag); // duplicate name.
+        else tag_set[tag] = comp;
+        console.log("added component", tag, "into", into);
+      }
+    }
+    // remove the component defns from the dom so they will not be rendered or affect layout.
+    for (var i=0; i<remove.length; i++) {
+      var defn = remove[i];
+      defn.parentNode.removeChild(defn);
+    }
+  }
+
+  function walk_dom(node, scope) {
     var nodeType = node.nodeType;
     if (nodeType == 1 || nodeType == 9) { // Element, Document.
       // each DOM node can only be controlled by one scope.
@@ -127,7 +185,7 @@
           // note that bindings can remove the node from the document,
           // so record the next child before applying bindings.
           var next_child = child.nextSibling;
-          bind_to_dom(child, scope);
+          walk_dom(child, scope);
           child = next_child;
         }
       }
@@ -139,10 +197,21 @@
     }
   }
 
-  // ---- init ----
+  function bind_to_dom(node, scope) {
+    // update the attribute prefix regex if register_prefix has been called.
+    if (prefixes_dirty) rebuild_prefixes();
+    // must find all component tags first, since they affect walk_dom.
+    find_components(node);
+    // now walk the dom nodes using component defs found above.
+    walk_dom(node, scope);
+  }
+
+  // ---- registration ----
 
   function register(name, handler, set, n) {
-    if (set[name]) error(document, n, name);
+    var d = document;
+    if (has_loaded) error(d, 10, name);
+    if (set[name]) error(d, n, name);
     set[name] = handler;
   }
 
@@ -157,21 +226,25 @@
     prefixes_dirty = true;
   }
 
+  // ---- init ----
+
   var win = window;
   if (win[manglr]) error(win, 0);
   win[manglr] = {tag:register_tag, directive:register_directive, prefix:register_prefix};
-  win = null; // GC.
 
   var doc = document;
-  if (doc.readyState == 'loading') {
-    // defer until (non-async) scripts have loaded so manglr plugins can register.
-    doc.addEventListener('DOMContentLoaded', function(){
-      bind_to_dom(doc, Scope());
-      doc = null; // GC.
-    });
-  } else {
+  function init() {
+    has_loaded = true;
     bind_to_dom(doc, Scope());
     doc = null; // GC.
   }
+  if (doc.readyState == 'loading') {
+    // defer until (non-async) scripts have loaded so manglr plugins can register.
+    doc.addEventListener('DOMContentLoaded', init);
+  } else {
+    win.setTimeout(0, init);
+  }
+
+  win = null; // GC.
 
 })();
