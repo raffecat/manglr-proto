@@ -74,16 +74,20 @@
     parent.appendChild(node);
   }
 
-  function create_tag(doc, parent, tag, attrs, bindings, children, scope, c_tags) {
+  function is_true(val) {
+    // true for non-empty collection or _text_ value.
+    return val instanceof Array ? val.length : (val || val===0);
+  }
+
+  function create_tag(doc, parent, tag, attrs, bindings, children, scope) {
     var node = doc.createElement(tag);
-    if (attrs.type) node.type = attrs.type; // IE.
     // - className, htmlFor
     // - style
     for (var i=0; i<attrs.length; i+=2) {
       var name = attrs[i];
       var val = attrs[i+1];
       if (typeof(node[name]) === 'boolean') {
-        node[name] = !!val; // true for non-empty _text_ value.
+        node[name] = !! is_true(val); // cast to boolean.
       } else {
         node.setAttribute(name, val);
       }
@@ -92,7 +96,7 @@
       var binding = bindings[i+1];
       binding(scope, function (val, name) {
         if (typeof(node[name]) === 'boolean') {
-          node[name] = !!(val || val===0); // true for non-empty _text_ value.
+          node[name] = !! is_true(val); // cast to boolean.
         } else {
           if (val == null) { // or undefined.
             node.removeAttribute(name);
@@ -104,7 +108,7 @@
       }, bindings[i]);
     }
     parent.appendChild(node);
-    spawn(doc, node, children, scope, c_tags);
+    spawn_dom(doc, node, children, scope);
   }
 
   function create_component(doc, parent, comp, attrs, bindings, children, scope) {
@@ -121,27 +125,108 @@
       inner.b[name] = binding(scope); // dep.
     }
     // each component defn should KNOW the component tag-names in scope.
-    spawn(doc, parent, comp.tpl, inner, comp.tags);
+    spawn_dom(doc, parent, comp.tpl, inner, comp.tags);
+    return inner; // for walk_dom.
   }
 
-  function spawn(doc, parent, children, scope, c_tags) {
-    // repeat, if, route: create and destroy scoped instances.
-    // c_tags: the component tags available in this scope [i.e. in this component]
-    for (var i=0; i<children.length; ) {
-      var tag = tpl[i];
-      if (tag === '') {
-        create_text(doc, parent, tpl[i+1], scope);
-        i += 2;
+  function create_condition(doc, parent, binding, contents, scope) {
+    // captures `parent` DOM node but can replace with `id` indirection and drop ref.
+    var inner = null; // scope if currently in-document.
+    binding(scope, function (val, name) {
+      if (is_true(val)) {
+        if (!inner) {
+          inner = spawn_dom(doc, parent, contents, scope);
+        }
       } else {
-        var attrs = tpl[i+2];
-        var bindings = tpl[i+3];
-        var contents = tpl[i+4];
-        i += 5;
-        var comp = c_tags[tag];
-        if (comp) {
-          create_component(doc, parent, comp, attrs, bindings, contents, scope);
+        if (inner) {
+          destroy_scope(inner);
+          inner = null;
+        }
+      }
+    });
+  }
+
+  function create_repeat(doc, parent, binding, bind_as, contents, scope) {
+    // captures `parent` DOM node but can replace with `id` indirection and drop ref.
+    var has = {}; delete has.x; // scope if currently in-document.
+    binding(scope, function (val, name) {
+      var seq = val instanceof Array ? val : [];
+      var sentinel = parent.firstChild;
+      var used = {};
+      for (var i=0; i<seq.length; i++) {
+        var model = seq[i];
+        var key = model ? (model.id || i) : i;
+        used[key] = true;
+        var inner;
+        if (hasOwn.call(has, key)) {
+          // move the existing dom node into the correct place (if order has changed)
+
+          // FIXME: inner.dom must be a list of DOM nodes, except where they're if/repeat
+          // scopes or component bodies (those are all lists of nodes!)
+          // Maybe need to virtual-dom these and implement a "move" traversal down to
+          // the first level of dom nodes in each scope.
+
+          inner = has[key];
+          parent.insertBefore(inner.dom, sentinel);
         } else {
-          create_tag(doc, parent, tag, attrs, bindings, contents, scope, c_tags);
+          // create an inner scope with bind_as bound to the model.
+          inner = Scope(scope, []);
+          inner.b[bind_as] = model;
+          spawn_dom(doc, parent, contents, inner);
+          has[key] = inner;
+          // move the new dom node into the correct place.
+          parent.insertBefore(inner.dom, sentinel);
+        }
+        sentinel = inner.dom.nextSibling;
+      }
+      // destroy all unused inner-scopes.
+      for (var key in has) {
+        if (hasOwn.call(has, key) && !hasOwn.call(used, key)) {
+          destroy_scope(has[key]);
+          delete has[key];
+        }
+      }
+    });
+  }
+
+  function spawn_dom(doc, parent, children, scope) {
+    // repeat, if, route: create and destroy scoped instances.
+    for (var i=0; i<children.length; ) {
+      switch (tpl[i]) {
+        case 0: { // text.
+          create_text(doc, parent, tpl[i+1], scope);
+          i += 2;
+          break;
+        }
+        case 1: { // tag.
+          var tag = tpl[i+1];
+          var attrs = tpl[i+2];
+          var bindings = tpl[i+3];
+          var contents = tpl[i+4];
+          i += 5;
+          create_tag(doc, parent, tag, attrs, bindings, contents, scope);
+          break;
+        }
+        case 2: { // component [resolved in advance]
+          var comp = tpl[i+1];
+          var attrs = tpl[i+2];
+          var bindings = tpl[i+3];
+          var contents = tpl[i+4];
+          i += 5;
+          create_component(doc, parent, comp, attrs, bindings, contents, scope);
+        }
+        case 3: { // if.
+          var cond = tpl[i+1];
+          var contents = tpl[i+2];
+          i += 3;
+          create_condition(doc, parent, cond, contents, scope);
+        }
+        case 4: { // repeat.
+          var over = tpl[i+1];
+          var bind_as = tpl[i+2];
+          var contents = tpl[i+3];
+          i += 4;
+          create_repeat(doc, parent, over, bind_as, contents, scope);
         }
       }
     }
@@ -216,7 +301,7 @@
     }
   }
 
-  function walk_dom(node, scope) {
+  function walk_dom(node, scope, c_tags) {
     var nodeType = node.nodeType;
     if (nodeType == 1 || nodeType == 9) { // Element, Document.
       // each DOM node can only be controlled by one scope.
@@ -225,9 +310,13 @@
       // check if the tag has a custom handler.
       var tag = node.nodeName.toLowerCase();
       // console.log("tag: "+tag);
-      var tag_hand = tags[tag];
-      if (tag_hand) {
-        // custom binding handler.
+      var comp = c_tags[tag];
+      if (comp) {
+        // spawn a component instance.
+        var inner = create_component(document, parent, comp, attrs, bindings, children, scope);
+        // replace the dom node with the 
+        node.parentNode.insertBefore(inner.dom, node);
+
         bind_handler(tag_hand, tag, node, tag, scope, bind_to_dom);
       }
       // iterate over attributes and apply bindings.
@@ -270,7 +359,7 @@
           // note that bindings can remove the node from the document,
           // so record the next child before applying bindings.
           var next_child = child.nextSibling;
-          walk_dom(child, scope);
+          walk_dom(child, scope, c_tags);
           child = next_child;
         }
       }
@@ -288,7 +377,7 @@
     // must find all component tags first, since they affect walk_dom.
     find_components(node);
     // now walk the dom nodes using component defs found above.
-    walk_dom(node, scope);
+    walk_dom(node, scope, root_component.tags);
   }
 
   // ---- registration ----
@@ -313,23 +402,25 @@
 
   // ---- init ----
 
-  var win = window;
-  if (win[manglr]) error(win, 0);
-  win[manglr] = {tag:register_tag, directive:register_directive, prefix:register_prefix};
+  (function(){
+    var win = window;
+    if (win[manglr]) error(win, 0);
+    win[manglr] = {tag:register_tag, directive:register_directive, prefix:register_prefix};
 
-  var doc = document;
-  function init() {
-    has_loaded = true;
-    bind_to_dom(doc, Scope(null, []));
-    doc = null; // GC.
-  }
-  if (doc.readyState == 'loading') {
-    // defer until (non-async) scripts have loaded so manglr plugins can register.
-    doc.addEventListener('DOMContentLoaded', init);
-  } else {
-    win.setTimeout(0, init);
-  }
+    var doc = document;
+    function init() {
+      has_loaded = true;
+      bind_to_dom(doc, Scope(null, []));
+      doc = null; // GC.
+    }
+    if (doc.readyState == 'loading') {
+      // defer until (non-async) scripts have loaded so manglr plugins can register.
+      doc.addEventListener('DOMContentLoaded', init);
+    } else {
+      win.setTimeout(0, init);
+    }
 
-  win = null; // GC.
+    win = null; // GC.
+  })();
 
 })();

@@ -55,6 +55,70 @@ When a component is used with an 'if' directive, its bindings are known even
 if they are not always active. Can components bind new names?
 
 
+## Indirect bindings
+
+When we iterate over a collection of models, each template instance is bound
+to names of fields on that model. If the model is swapped (i.e. not keyed)
+for an instance, all of those bindings need to be re-bound to a new model.
+
+What if models are always keyed? Give each model a unique id, and create a
+new template instance for a new model (re-parent and re-order nodes for
+existing models) Thus bindings to models cannot change.
+
+Now introduce a slot in a model that holds another model, and change the
+value in that slot [mutable refs to models]
+
+Either we subscribe to mutable slots like this, or we use a sync pass to
+update all the bindings [a global pass scales poorly]
+
+
+## Spawning
+
+Repeat, if, route: create and destroy scoped instances.
+Contents [transclude] - should move or templateize the contents?
+
+traverse body with scope:
+- component -> [attrs and contents are bindings] -> new scope -> traverse body
+- text -> [one binding to data] -> createTextNode -> bind evaluator
+- element -> [attrs and bindings] -> createElement -> setAttribute -> bind attributes
+
+bind attribute:
+- resolve names -> deps in scope (once)
+- fields: subscribe to dep -> update: [if model] resolve name to dep in model -> subscribe to dep
+- text or text attr: subscribe to dep -> update: [if string or number] toString [else] ''
+
+https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes
+https://github.com/kangax/html-minifier/issues/63
+https://stackoverflow.com/questions/706384/boolean-html-attributes?utm_medium=organic&utm_source=google_rich_qa&utm_campaign=google_rich_qa
+
+Boolean attributes:
+- contenteditable, spellcheck -> only "true" and "" and no-value mean true
+
+
+## IE 7
+
+https://msdn.microsoft.com/en-us/ie/ms536389(v=vs.94)
+
+In Internet Explorer, you can specify all the attributes inside the createElement
+method by using an HTML string for the method argument.
+
+You must perform a second step when you use createElement to create the input element.
+The createElement method generates an input text box, because that is the default input
+type property. To insert any other kind of input element, first invoke createElement for
+input, and then set the type property to the appropriate value in the next line of code.
+Attributes can be included with the eTag as long as the entire string is valid HTML.
+To include the NAME attribute at run time on objects created with the createElement method,
+use the eTag. Use the eTag to include attributes when form elements are created that will
+be reset using the reset method or a BUTTON with a TYPE attribute value of reset.
+
+// Create radio button object with value="First Choice" and then insert this element into the document hierarchy.
+var newRadioButton = document.createElement('input');
+newRadioButton.setAttribute('type', 'radio');
+newRadioButton.setAttribute('name', 'radio1');
+newRadioButton.setAttribute('value', 'First Choice');
+document.body.insertBefore(newRadioButton); // Since the second argument is implicity null, this inserts the radio button at the end of this node's list of children ("this" node refers to the body element).
+
+
 ## Directives on components
 
 Each component must be replaced by one native tag, otherwise directives on
