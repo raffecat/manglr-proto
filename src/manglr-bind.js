@@ -3,7 +3,7 @@
   var manglr = 'manglr';
   var is_scope = manglr+'_s';
   var is_tpl = manglr+'_t';
-  var std_attr = new RegExp("^http-equiv$|^data-.*|^aria-.*");
+  var std_attr = new RegExp("^accept-charset$|^http-equiv$|^data-|^aria-");
   var prefix_re;
   var hasOwn = Object.prototype.hasOwnProperty;
   var nextSid = 1;
@@ -14,6 +14,7 @@
   var root_component = { id:'c0', tags:{} };
   var components = { c0:root_component }; // index.
   var has_loaded = false;
+  // var is_boolean = new RegExp("^selected|^checked|^disabled|^readonly|^multiple");
 
   // ---- tag handlers ----
 
@@ -58,8 +59,92 @@
 
   // ---- scopes ----
 
-  function Scope() {
-    return {id:'s'+(nextSid++), com:{}};
+  function Scope(up, contents) {
+    return {id:'s'+(nextSid++), b:{}, up:up, co:contents, in:[]};
+  }
+
+  // ---- creating templates ----
+
+  function create_text(doc, parent, binding, scope) {
+    var node = doc.createTextNode('');
+    binding(scope, function (val) {
+      var t = typeof(val);
+      node.data = (t === 'string' || t === 'number') ? val : '';
+    });
+    parent.appendChild(node);
+  }
+
+  function create_tag(doc, parent, tag, attrs, bindings, children, scope, c_tags) {
+    var node = doc.createElement(tag);
+    if (attrs.type) node.type = attrs.type; // IE.
+    // - className, htmlFor
+    // - style
+    for (var i=0; i<attrs.length; i+=2) {
+      var name = attrs[i];
+      var val = attrs[i+1];
+      if (typeof(node[name]) === 'boolean') {
+        node[name] = !!val; // true for non-empty _text_ value.
+      } else {
+        node.setAttribute(name, val);
+      }
+    }
+    for (var i=0; i<bindings.length; i+=2) {
+      var binding = bindings[i+1];
+      binding(scope, function (val, name) {
+        if (typeof(node[name]) === 'boolean') {
+          node[name] = !!(val || val===0); // true for non-empty _text_ value.
+        } else {
+          if (val == null) { // or undefined.
+            node.removeAttribute(name);
+          } else {
+            var t = typeof(val);
+            node.setAttribute(name, (t === 'string' || t === 'number') ? val : '');
+          }
+        }
+      }, bindings[i]);
+    }
+    parent.appendChild(node);
+    spawn(doc, node, children, scope, c_tags);
+  }
+
+  function create_component(doc, parent, comp, attrs, bindings, children, scope) {
+    var inner = Scope(scope, children);
+    scope.in.push(inner); // register to be destroyed with enclosing scope.
+    for (var i=0; i<attrs.length; i+=2) {
+      var name = attrs[i];
+      var val = attrs[i+1];
+      inner.b[name] = val; // bind to literal.
+    }
+    for (var i=0; i<bindings.length; i+=2) {
+      var name = bindings[i];
+      var binding = bindings[i+1];
+      inner.b[name] = binding(scope); // dep.
+    }
+    // each component defn should KNOW the component tag-names in scope.
+    spawn(doc, parent, comp.tpl, inner, comp.tags);
+  }
+
+  function spawn(doc, parent, children, scope, c_tags) {
+    // repeat, if, route: create and destroy scoped instances.
+    // c_tags: the component tags available in this scope [i.e. in this component]
+    for (var i=0; i<children.length; ) {
+      var tag = tpl[i];
+      if (tag === '') {
+        create_text(doc, parent, tpl[i+1], scope);
+        i += 2;
+      } else {
+        var attrs = tpl[i+2];
+        var bindings = tpl[i+3];
+        var contents = tpl[i+4];
+        i += 5;
+        var comp = c_tags[tag];
+        if (comp) {
+          create_component(doc, parent, comp, attrs, bindings, contents, scope);
+        } else {
+          create_tag(doc, parent, tag, attrs, bindings, contents, scope, c_tags);
+        }
+      }
+    }
   }
 
   // ---- binding ----
@@ -211,8 +296,8 @@
   function register(name, handler, set, n) {
     var d = document;
     if (has_loaded) error(d, 10, name);
-    if (set[name]) error(d, n, name);
-    set[name] = handler;
+    else if (set[name]) error(d, n, name);
+    else set[name] = handler;
   }
 
   function register_tag(name, handler) {
@@ -235,7 +320,7 @@
   var doc = document;
   function init() {
     has_loaded = true;
-    bind_to_dom(doc, Scope());
+    bind_to_dom(doc, Scope(null, []));
     doc = null; // GC.
   }
   if (doc.readyState == 'loading') {
