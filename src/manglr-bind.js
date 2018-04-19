@@ -365,7 +365,7 @@
 
   function parse_text_tpl(text, tpl) {
     var pos = text.indexOf('{');
-    console.log("parse_text_tpl:", pos, text);
+    // console.log("parse_text_tpl:", pos, text);
     if (~pos) {
       tpl_re.lastIndex = 0;
       for (;;) {
@@ -392,6 +392,7 @@
     if (nodeType == 1) { // Element.
       // check if the tag has a custom handler.
       var tag = node.nodeName.toLowerCase();
+      if (tag === 'component' || tag === 'script') return; // elide from tpl.
       // parse attributes.
       var attrs = node.attributes; // NB. Document does not have attributes.
       var raw = [];
@@ -500,111 +501,38 @@
         child = child.nextSibling;
       }
       console.log("component:", comp.tag, comp.tpl);
-      // remove the component nodes from the dom so they will not be rendered or affect layout.
-      node.parentNode.removeChild(node);
     }
   }
 
-  // ---- binding ----
-
-  function bind_handler(handler, name, node, contents, scope, bind_to_dom) {
-    // console.log("bind:", name, contents, node);
-    try {
-      handler(node, contents, scope, bind_to_dom);
-    } catch (err) {
-      error(node, 2, name, err);
+  function parse_body(c_tags) {
+    var body = document.body;
+    var first = body.firstChild;
+    // parse children of the body into a tpl.
+    var tpl = [];
+    var child = first;
+    while (child != null) {
+      parse_tpl(child, tpl, c_tags);
+      child = child.nextSibling;
     }
-  }
-
-  function bind_attribute(node, name, contents, scope) {
-  }
-
-  function bind_text_node(node, contents, scope) {
-  }
-
-  function walk_dom(node, scope, c_tags) {
-    var nodeType = node.nodeType;
-    if (nodeType == 1 || nodeType == 9) { // Element, Document.
-      // each DOM node can only be controlled by one scope.
-      if (node[is_scope]) return; // DOM node is already controlled by a scope.
-      node[is_scope] = true; // now controlled by manglr.
-      // check if the tag has a custom handler.
-      var tag = node.nodeName.toLowerCase();
-      // console.log("tag: "+tag);
-      var comp = c_tags[tag];
-      if (comp) {
-        // parse this node as a tpl, since that will correctly parse all
-        // the attribute bindings and child nodes in the form we need.
-        var inst_tpl = [];
-        parse_tpl(node, inst_tpl, c_tags);
-        create_component(document, node.parentNode, node, scope, inst_tpl, 0);
-        // remove the custom-tag node from the dom.
-        node.parentNode.removeChild(node);
-      } else {
-        // iterate over attributes and apply bindings.
-        var attrs = node.attributes; // NB. Document does not have attributes.
-        for (var i=0,n=attrs&&attrs.length; i<n; i++) {
-          var attr = attrs[i];
-          // compatibility: old versions of IE iterate over non-present attributes.
-          if (attr.specified) {
-            var name = attr.name;
-            var contents = attr.value;
-            var handler = directives[name];
-            if (handler) {
-              // custom binding handler.
-              bind_handler(handler, name, node, contents, scope, bind_to_dom);
-            } else {
-              if (~name.indexOf('-')) {
-                // check if the attribute matches any registered handler prefix.
-                var m = name.match(prefix_re);
-                if (m) {
-                  var prefix = m[0];
-                  var suffix = name.substr(prefix.length);
-                  // custom binding handler.
-                  bind_handler(prefixes[prefix], suffix, node, contents, scope, bind_to_dom);
-                } else {
-                  // warn if the attribute is not a standard HTML attribute.
-                  if (!std_attr.test(name)) error(node, 1, name);
-                }
-              }
-              // bind the attribute if it contains any placeholders.
-              if (~contents.indexOf('{')) {
-                bind_attribute(node, name, contents, scope);
-              }
-            }
-          }
-        }
-        // iterate over child nodes unless the node has become a template.
-        if (!node[is_tpl]) {
-          var child = node.firstChild;
-          while (child) {
-            // note that bindings can remove the node from the document,
-            // so record the next child before applying bindings.
-            var next_child = child.nextSibling;
-            walk_dom(child, scope, c_tags);
-            child = next_child;
-          }
-        }
-      }
-    } else if (nodeType == 3) { // Text.
-      var text = node.data; // CharacterData, DOM level 1.
-      if (~text.indexOf('{')) {
-        var text_tpl = [];
-        parse_tpl(node, text_tpl, c_tags);
-        console.log("TEXT:", text, text_tpl);
-        spawn_dom(document, node.parentNode, node, text_tpl, scope, null);
-        node.parentNode.removeChild(node);
-      }
+    // remove the children of body.
+    var child = first;
+    while (child != null) {
+      var next = child.nextSibling;
+      body.removeChild(child);
+      child = next;
     }
+    return tpl;
   }
 
-  function bind_to_dom(node, scope) {
+  function bind_to_dom(doc, scope) {
     // update the attribute prefix regex if register_prefix has been called.
     if (prefixes_dirty) rebuild_prefixes();
     // must find all component tags first, since they affect walk_dom.
-    find_components(node);
-    // now walk the dom nodes using component defs found above.
-    walk_dom(node, scope, root_component.tags);
+    find_components(doc);
+    // parse the document body into a template like the AoT compiler would.
+    var tpl = parse_body(root_component.tags);
+    // spawn the document body.
+    spawn_dom(doc, doc.body, null, tpl, scope, null);
   }
 
   // ---- registration ----

@@ -74,8 +74,8 @@ update all the bindings [a global pass scales poorly]
 
 ## Spawning
 
-Repeat, if, route: create and destroy scoped instances.
-Contents [transclude] - should move or templateize the contents?
+- Repeat, if, route: create and destroy scoped instances.
+- Contents [transclude]: should move or templateize the contents?
 
 traverse body with scope:
 - component -> [attrs and contents are bindings] -> new scope -> traverse body
@@ -87,18 +87,17 @@ bind attribute:
 - fields: subscribe to dep -> update: [if model] resolve name to dep in model -> subscribe to dep
 - text or text attr: subscribe to dep -> update: [if string or number] toString [else] ''
 
-https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes
-https://github.com/kangax/html-minifier/issues/63
-https://stackoverflow.com/questions/706384/boolean-html-attributes?utm_medium=organic&utm_source=google_rich_qa&utm_campaign=google_rich_qa
-
 Boolean attributes:
 - contenteditable, spellcheck -> only "true" and "" and no-value mean true
+- https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes
+- https://github.com/kangax/html-minifier/issues/63
+- https://stackoverflow.com/questions/706384/boolean-html-attributes?utm_medium=organic&utm_source=google_rich_qa&utm_campaign=google_rich_qa
 
 
 ## IE 7
 
-https://msdn.microsoft.com/en-us/ie/ms536389(v=vs.94)
-http://kangax.github.io/nfe/
+- https://msdn.microsoft.com/en-us/ie/ms536389(v=vs.94)
+- http://kangax.github.io/nfe/
 
 In Internet Explorer, you can specify all the attributes inside the createElement
 method by using an HTML string for the method argument.
@@ -112,12 +111,14 @@ To include the NAME attribute at run time on objects created with the createElem
 use the eTag. Use the eTag to include attributes when form elements are created that will
 be reset using the reset method or a BUTTON with a TYPE attribute value of reset.
 
+```
 // Create radio button object with value="First Choice" and then insert this element into the document hierarchy.
 var newRadioButton = document.createElement('input');
 newRadioButton.setAttribute('type', 'radio');
 newRadioButton.setAttribute('name', 'radio1');
 newRadioButton.setAttribute('value', 'First Choice');
 document.body.insertBefore(newRadioButton); // Since the second argument is implicity null, this inserts the radio button at the end of this node's list of children ("this" node refers to the body element).
+```
 
 
 ## Directives on components
@@ -126,8 +127,8 @@ Each component must be replaced by one native tag, otherwise directives on
 component nodes won't have a real dom node to bind to.
 
 But this severely restricts components: a component can be transparent to one
-level (e.g. resolve to an <li>) but not at two levels (e.g. component contains
-only another component that contains the <li>)
+level (e.g. resolve to an `<li>`) but not at two levels (e.g. component contains
+only another component that contains the `<li>`)
 
 Perhaps directives and DOM attributes like 'class' and 'style' cannot be applied
 to components; they serve a different purpose.
@@ -143,10 +144,10 @@ component instances [making scopes for them that persist as long as the instance
 
 When a `repeat` node is updated -> iterate over the collection of models,
 
-  // TODO: rather inefficient in some cases where searching is required.
-  // spawning can always be reduced to two steps:
-  // - find the insertion point (next sibling after previous Node/Scope)
-  // - create the tpl using that insertion point.
+TODO: rather inefficient in some cases where searching is required.
+Spawning can always be reduced to two steps:
+- find the insertion point (next sibling after previous Node/Scope)
+- create the tpl using that insertion point.
 
 
 ## Repeat Nodes
@@ -174,3 +175,49 @@ scope, so destroying a scope is enough to unbind all subscribed deps.
 
 Cannot destroy dom nodes, so must remove them [the top-level ones] from the dom and
 drop all refs to them [particularly in closures attached to deps in scopes].
+
+
+## MVP
+
+The simplest implementation is to pull templates out of the dom for components
+and `repeat` nodes, use cloneNode to duplicate them, and then walk the copies
+without any pre-processing. Every component MUST have a top-level dom node.
+Insert placeholder nodes for `if` and `repeat` and add/remove dom nodes after
+the placeholder. For `if` nodes, unbind and drop the dom on remove, and
+therefore also use cloneNode and walk the copy in insert. If initially true,
+can cloneNode a copy of the `if` and walk the exising nodes.
+
+An `if` [false] followed by a `repeat`: the `if` inserts a placeholder node,
+so the `repeat` placeholder can be inserted after that. An `if` [true] that
+becomes [false] does not affect the following `repeat`.
+
+A `repeat` that contains an `if` [false] that later becomes [true]: how does
+the repeat keep track of the current node in the `if`? By id: cannot put an
+id on a text node or comment node, so no go. By ref: need to update that ref
+when swapping the `if` in and out. Repeat should hold a vnode that holds the
+dom node (i.e. `if` always generates a vnode.)
+
+A `repeat` that contains a `repeat` where the outer repeat needs to re-order
+its views: so a repeat must be a real dom node - or a vnode that has a list
+of vnodes for the contents [if,repeat,dom] - also wrap dom nodes in vnodes
+to keep it regular.
+
+
+## Crisis
+
+Q: Build it for AoT or build it for in-browser use? Or both?!
+
+In browser: should modify and bind to nodes in-place when the script loads,
+to avoid scroll reset, clearing input fields, restarting video, and so on.
+-> only take control of if/repeat/component nodes.
+
+Pre-render: same rules as in-browser: pre-rendered nodes should not be removed
+or replaced when the script loads, but directives should enhance those nodes.
+-> have the spawn process take ownership of existing nodes by id or position.
+
+I think the in-browser compiler is just a prototype: due to old browser
+limitations and new browser features, custom tags like <component> and bound
+attributes like <img src="{url}"> will always cause problems in production.
+
+Could work around these: use a prefix 'v-' for bindings; <component> seems
+to be ok in modern browsers.
