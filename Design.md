@@ -98,6 +98,7 @@ Boolean attributes:
 ## IE 7
 
 https://msdn.microsoft.com/en-us/ie/ms536389(v=vs.94)
+http://kangax.github.io/nfe/
 
 In Internet Explorer, you can specify all the attributes inside the createElement
 method by using an HTML string for the method argument.
@@ -133,3 +134,43 @@ to components; they serve a different purpose.
 
 Optionally components can be defined as representing a standard HTML element,
 and therefore directives can be applied.
+
+
+## Creating Templates
+
+When an `if` becomes true -> walk template and create dom nodes, traversing any
+component instances [making scopes for them that persist as long as the instance]
+
+When a `repeat` node is updated -> iterate over the collection of models,
+
+  // TODO: rather inefficient in some cases where searching is required.
+  // spawning can always be reduced to two steps:
+  // - find the insertion point (next sibling after previous Node/Scope)
+  // - create the tpl using that insertion point.
+
+
+## Repeat Nodes
+
+Repeat nodes must be able to move their contents. When the collection of models
+is re-ordered [or even moved from collection to collection] the runtime must be
+able to move the contents of each repeat node into the new document order.
+
+Need some virtual dom here: repeat nodes, if nodes and component nodes are all
+virtual, in that they don't necessarily have a single top-level node, but rather
+a list of top-level nodes. Even text with placeholders could be implemented as
+a virtual node, creating a dom Text node for each placeholder and text span.
+
+By using globally unique keys and deferring deletion (transactionally), we could
+actually re-parent dom nodes anywhere in the tree.
+
+
+## Tear-down
+
+When a subtree is removed - e.g. due to repeat/if/route change, traverse the subtree
+under that node, remove dom nodes and scopes.
+
+All deps are bound to a scope, and all scopes [except the root] are bound to a parent
+scope, so destroying a scope is enough to unbind all subscribed deps.
+
+Cannot destroy dom nodes, so must remove them [the top-level ones] from the dom and
+drop all refs to them [particularly in closures attached to deps in scopes].
