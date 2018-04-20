@@ -14,7 +14,8 @@
   var root_component = { id:'c0', tags:{} };
   var components = { c0:root_component }; // index.
   var has_loaded = false;
-  // var is_boolean = new RegExp("^selected|^checked|^disabled|^readonly|^multiple");
+  var null_dep = { value:null, wait:-1, fwd:null, fn:null }; // dep.
+  var is_text = { "boolean":1, "number":1, "string":1, "symbol":1, "undefined":0, "object":0, "function":0 };
 
   // ---- error reporting ----
 
@@ -56,7 +57,7 @@
     prefix_re = new RegExp(res.join('|'))
   }
 
-  // ---- scopes ----
+  // ---- scopes and deps ----
 
   function Scope(up, contents) {
     // a binding context for names lexically in scope.
@@ -85,13 +86,71 @@
       }
       scope = scope.up;
     } while (scope);
-    return null;
+    return null_dep;
+  }
+
+  // scopes always hold deps - slot or computed bound to a name.
+  // deps can be const (wait<0) - such deps will never update.
+  // models also always hold deps - can create on demand?
+
+  // have const deps because we create [recursive] components at run-time,
+  // also `repeat` over data that will never change (for the life of the repeat)
+
+  function dep_upd_field(dep) {
+    var model = dep.from.value;
+    // TODO: if model is actually a model, its fields will be deps.
+    // TODO: -> need to make this dep follow that dep and take its value here.
+    // TODO: -> need to stop following the old dep if the dep has changed.
+    dep.value = (model != null) ? model[dep.name] : null;
   }
 
   function resolve_in_scope(scope, expr) {
     var len = expr.length;
-    if (len < 1) return null;
+    if (len < 1) return null_dep;
+    // resolve paths by creating deps that watch fields.
     var dep = name_from_scope(scope, expr[0]);
+    for (var i=1; i<len; i++) {
+      var name = expr[i];
+      if (dep.wait<0) {
+        // constant value.
+        // inline version of dep_upd_field.
+        var model = dep.value;
+        var val = (model != null) ? model[name] : null;
+        // make a const dep with the field value.
+        // TODO: if model is actually a model, its fields will be deps.
+        // TODO: -> can just use that dep directly.
+        dep = { value:val, wait:-1, fwd:null, fn:null }; // dep.
+      } else {
+        // varying value.
+        var watch = { value:null, wait:0, fwd:[], fn:dep_upd_field, from:dep, name:name }; // dep.
+        dep.fwd.push(watch);
+        dep = watch;
+      }
+    }
+    return dep;
+  }
+
+  function dep_upd_text_tpl(dep) {
+    // concatenate text fragments from each input dep.
+    var args = dep.args;
+    var text = "";
+    for (var i=0; i<args.length; i++) {
+      var val = args[i].value;
+      text += is_text[typeof(val)] ? val : "";
+    }
+    dep.value = text;
+  }
+
+  function resolve_text_tpl(scope, tpl) {
+    var args = [];
+    var dep = { value:"", wait:0, fwd:[], fn:dep_upd_text_tpl, args:args }; // dep.
+    for (var i=0; i<tpl.length; i += 2) {
+      var arg = tpl[i+1];
+      switch (tpl[i]) {
+        case 0: args.push({value:arg}); // literal text.
+        case 1: args.push(resolve_in_scope(scope, arg)); // expression.
+      }
+    }
     return dep;
   }
 
@@ -139,44 +198,49 @@
     return node;
   }
 
+  function dep_upd_text_node(dep) {
+    // update a DOM Text node from an input dep's value.
+    var val = dep.from.value;
+    dep.node.data = is_text[typeof(val)] ? val : '';
+  }
+
   function create_bound(doc, parent, after, scope, tpl) {
     // create a bound text node.
     var n = tpl.n;
-    var binding = tpl[n+1]; // [1, ["name", ...]]
+    var binding = tpl[n+1]; // [1, expr]
     tpl.n = n+2;
     var node = doc.createTextNode('');
     var dep = resolve_in_scope(scope, binding);
-    if (dep) {
-      var t = typeof(dep);
-      if (t === 'string' || t === 'number') {
-        // constant value.
-        node.data = dep;
-      } else {
-        // varying value.
-        dep.watch(function (val) {
-          var t = typeof(val);
-          node.data = (t === 'string' || t === 'number') ? val : '';
-        });
-      }
+    if (dep.wait<0) {
+      // constant value.
+      // inline version of dep_upd_text_node.
+      var val = dep.value;
+      node.data = is_text[typeof(val)] ? val : '';
+    } else {
+      // varying value.
+      var watch = { value:null, wait:0, fwd:[], fn:dep_upd_text_node, node:node, from:dep }; // dep.
+      console.log("dep on:", dep);
+      dep.fwd.push(watch);
     }
     insert_after(parent, after, node);
     return node;
   }
 
-  function bind_tag_attr(node, name, dep) {
-    dep.watch(function (val) {
-      if (typeof(node[name]) === 'boolean') {
-        console.log("BOOLEAN:", name);
-        node[name] = !! is_true(val); // cast to boolean.
+  function dep_upd_node_attr(dep) {
+    // update a DOM Element attribute from an input dep's value.
+    var node = dep.node;
+    var name = dep.name;
+    var val = dep.from.value;
+    if (typeof(node[name]) === 'boolean') {
+      console.log("BOOLEAN:", name);
+      node[name] = !! is_true(val); // cast to boolean.
+    } else {
+      if (val == null) { // or undefined.
+        node.removeAttribute(name);
       } else {
-        if (val == null) { // or undefined.
-          node.removeAttribute(name);
-        } else {
-          var t = typeof(val);
-          node.setAttribute(name, (t === 'string' || t === 'number') ? val : '');
-        }
+        node.setAttribute(name, is_text[typeof(val)] ? val : '');
       }
-    });
+    }
   }
 
   function create_tag(doc, parent, after, scope, tpl) {
@@ -201,26 +265,27 @@
     }
     for (var i=0; i<bindings.length; i+=2) {
       var name = bindings[i];
-      var dep = resolve_in_scope(scope, bindings[i+1]);
-      if (dep) {
-        var t = typeof(dep);
-        if (t === 'string' || t === 'number') {
-          // constant value.
-          if (typeof(node[name]) === 'boolean') {
-            console.log("BOOLEAN:", name);
-            node[name] = !! is_true(dep); // cast to boolean.
-          } else {
-            if (dep == null) { // or undefined.
-              node.removeAttribute(name);
-            } else {
-              var t = typeof(dep);
-              node.setAttribute(name, (t === 'string' || t === 'number') ? dep : '');
-            }
-          }
+      var text_tpl = bindings[i+1];
+      var dep = resolve_text_tpl(scope, text_tpl);
+      console.log("resolve:", name, text_tpl, dep);
+      if (dep.wait<0) {
+        // constant value.
+        // inline version of dep_upd_node_attr.
+        var val = dep.value;
+        if (typeof(node[name]) === 'boolean') {
+          console.log("BOOLEAN:", name);
+          node[name] = !! is_true(val); // cast to boolean.
         } else {
-          // varying value.
-          bind_tag_attr(node, name, dep);
+          if (val == null) { // or undefined.
+            node.removeAttribute(name);
+          } else {
+            node.setAttribute(name, is_text[typeof(val)] ? val : '');
+          }
         }
+      } else {
+        // varying value.
+        var watch = { value:null, wait:0, fwd:[], fn:dep_upd_node_attr, node:node, from:dep, name:name }; // dep.
+        dep.fwd.push(watch);
       }
     }
     insert_after(parent, after, node);
@@ -243,7 +308,8 @@
     for (var i=0; i<attrs.length; i+=2) {
       var name = attrs[i];
       var val = attrs[i+1];
-      inner.binds[name] = val; // bind to literal.
+      // create a dep that represents the literal value.
+      inner.binds[name] = { value:val, wait:-1, fwd:null, fn:null }; // dep.
     }
     for (var i=0; i<bindings.length; i+=2) {
       var name = bindings[i];
@@ -321,7 +387,7 @@
         } else {
           // create an inner scope with bind_as bound to the model.
           inner = Scope(outer, scope.contents); // component `contents` available within `repeat` nodes.
-          inner.binds[bind_as] = model;
+          inner.binds[bind_as] = { value:model, wait:-1, fwd:null, fn:null }; // dep.
           has[key] = inner;
           spawn_tpl(doc, parent, ins_after, contents, inner, inner.dom);
           outer.dom.push(inner);
