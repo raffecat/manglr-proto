@@ -13,6 +13,9 @@ manglr = (function(){
   var root_component = { id:'c0', tags:{} };
   var components = { c0:root_component }; // index.
   var has_loaded = false;
+  var bool_attr = "allowFullscreen|async|autofocus|autoplay|checked|compact|controls|declare|default|defaultChecked|defaultMuted|defaultSelected|defer|disabled|draggable|enabled|formNoValidate|hidden|indeterminate|inert|isMap|itemScope|loop|multiple|muted|noHref|noResize|noShade|noValidate|noWrap|open|pauseOnExit|readOnly|required|reversed|scoped|seamless|selected|sortable|spellcheck|translate|trueSpeed|typeMustMatch|visible";
+  var bool_map = {};
+  for (var k, s=bool_attr.split('|'), i=0; i<s.length; i++) { k=s[i]; bool_map[k.toLowerCase()]=k; }
 
   // ---- error reporting ----
 
@@ -29,6 +32,8 @@ manglr = (function(){
     'duplicate component tag name "@" declared',                            // 9
     'directives (@) must be registered before DOMContentLoaded',            // 10
     'component tag name "@" hides another component with the same name',    // 11
+    'handler for attribute "@" did not return an [expression]',             // 12
+    'class attribute should not be bound to an expression: @',              // 13
   ];
 
   var con = window.console;
@@ -37,10 +42,55 @@ manglr = (function(){
     if (con) con.log(manglr+': '+(error_msgs[n]||n).replace(/@/g,name), node, err);
   }
 
+  // ---- directives ----
+
+  // a safe api: requires the handler to return what it wants done,
+  // in a form we can verify before encoding in the template.
+
+  var api = {
+    expr: function(src) { return src.split('.'); },
+    text: function(src) { var tpl=[]; parse_text_tpl(src, tpl); return tpl; },
+    cond: function(expr, node) { return [3, expr, [node]]; },
+    opcode: function(name) { return [80, name]; }, // register and gen index.
+    unary: function(op, arg) { return [op, arg]; },
+  };
+
+  directives['if'] = function (name, value, node) {
+    console.log("IF:", name, value, node);
+    // - remove the `if` attribute (implied by the handler)
+    // - compile the expression in the scope of `node` [repeat creates its own scopes]
+    // - wrap the node in a condition node.
+    return api.cond(api.expr(value), node);
+  };
+
+  directives['if-route'] = function (name, value, node) {
+    console.log("IF-ROUTE:", name, value, node);
+    // - remove the `if` attribute (implied by the handler)
+    // - compile the expression in the scope of `node` [repeat creates its own scopes]
+    // - wrap the node in a condition node.
+    var match = api.opcode('router.match');
+    var cond = api.unary(match, api.text(value));
+    return api.cond(cond, node);
+  };
+
   // ---- prefix handlers ----
 
-  prefixes['class-'] = function(){};
-  prefixes['style-'] = function(){};
+  prefixes['class-'] = function(name, value, node) {
+    console.log("CLASS:", name, value, node);
+    // - remove the `class-name` attribute (implied by the handler)
+    // - compile the expression in the scope of `node`.
+    // - add a run-time class binding to the node.
+    var bind_class = api.opcode('bind.class');
+    var expr = api.expr(value);
+    return [bind_class, name, expr];
+  };
+
+  prefixes['style-'] = function(name, value, node) {
+    console.log("STYLE:", name, value, node);
+    // - remove the `style-name` attribute (implied by the handler)
+    // - compile the expression in the scope of `node`.
+    // - add a run-time style binding to the node.
+  };
 
   function rebuild_prefixes() {
     // lazy rebuild after a new handler is registered.
@@ -105,9 +155,31 @@ manglr = (function(){
         // compatibility: old versions of IE iterate over non-present attributes.
         if (attr.specified) {
           var name = attr.name;
+          var name_lc = name.toLowerCase();
           var value = attr.value;
-          // TODO: directives and prefix-* will need to be applied when spawning,
-          // but we must resolve them here because we don't want to match them during spawn!
+          // check if the attribute name matches any registered handler.
+          var handler = directives[name_lc];
+          if (handler) {
+              var expr = handler(name, value, node);
+              if (expr instanceof Array) binds.push(name, expr); else error(node, 12, name);
+              continue;
+          }
+          // check if the attribute matches any registered prefix.
+          if (~name_lc.indexOf('-')) {
+            var m = name_lc.match(prefix_re);
+            if (m) {
+              var prefix = m[0];
+              var suffix = name.substr(prefix.length);
+              // custom binding handler.
+              var handler = prefixes[prefix];
+              var expr = handler(suffix, value, node);
+              if (expr instanceof Array) binds.push(name, expr); else error(node, 12, name);
+              continue;
+            } else {
+              // warn if the attribute is not a standard HTML attribute.
+              if (!std_attr.test(name_lc)) error(node, 1, name);
+            }
+          }
           // TODO: also need to handle `if` and `repeat` here - wraps this node!
           // TODO: `route` custom-tag will wrap its contents in an `if` node.
           if (~value.indexOf('{')) {
@@ -128,7 +200,47 @@ manglr = (function(){
       } else {
         // debugging: report custom tag names if not a component.
         if (~tag.indexOf('-')) error(node, 3, tag);
-        tpl.push(2, tag, raw, binds, children); // create_tag.
+        tpl.push(2, tag, 0); // create_tag.
+        var num_ofs = tpl.length - 1; // save offset to patch later.
+        var num_attr = 0;
+        // encode attributes for the runtime.
+        for (var i=0; i<raw.length; i += 2) {
+          var name = raw[i], value = raw[i+1];
+          if (name.toLowerCase() === 'class') {
+            // special case: each class is handled individually.
+            var names = value.split(/\s+/g);
+            for (var c=0; c<names.length; c++) {
+              tpl.push(4, names[c]); // literal class.
+              num_attr++;
+            }
+          } else {
+            if (hasOwn.call(bool_map, name)) {
+              // map the name to the correct property case.
+              tpl.push(1, bool_map[name], true); // literal boolean.
+              num_attr++;
+            } else {
+              tpl.push(0, name, value); // literal text.
+              num_attr++;
+            }
+          }
+        }
+        for (var i=0; i<binds.length; i += 2) {
+          var name = binds[i], expr = binds[i+1];
+          if (name.toLowerCase() === 'class') {
+            error(node, 13, value);
+          } else {
+            if (hasOwn.call(bool_map, name)) {
+              // map the name to the correct property case.
+              tpl.push(3, bool_map[name], expr); // bound boolean.
+              num_attr++;
+            } else {
+              tpl.push(2, name, expr); // bound text-template.
+              num_attr++;
+            }
+          }
+        }
+        tpl[num_ofs] = num_attr;
+        tpl.push(children);
       }
     } else if (nodeType == 3) { // Text.
       // node.data: CharacterData, DOM level 1.

@@ -1,19 +1,19 @@
 (function(manglr){
   "use strict";
 
-  var std_attr = new RegExp("^accept-charset$|^http-equiv$|^data-|^aria-");
   var hasOwn = Object.prototype.hasOwnProperty;
   var nextSid = 1;
   var null_dep = { value:null, wait:-1, fwd:null, fn:null }; // dep.
   var is_text = { "boolean":1, "number":1, "string":1, "symbol":1, "undefined":0, "object":0, "function":0 };
+  var error = window.console && console.log || function(){};
 
   // ---- scopes and deps ----
 
   function Scope(up, contents) {
     // a binding context for names lexically in scope.
     // find bound names in `b` or follow the `up` scope-chain.
-    var s = {dom:[], id:'s'+(nextSid++), binds:{}, up:up, contents:contents, in:[]};
-    if (up) up.in.push(s); // register to be destroyed with enclosing scope.
+    var s = { id:'s'+(nextSid++), binds:{}, up:up, contents:contents, dom:[], watch:[], inner:[] };
+    if (up) up.inner.push(s); // register to be destroyed with enclosing scope.
     return s;
   }
 
@@ -25,6 +25,25 @@
   }
 
   function reset_scope(scope) {
+    // reset [destroy] all the spawned contents in the scope.
+    // NB. don't clear `binds`, `up`, `contents` because the scope can be re-populated.
+    // remove the top-level DOM nodes.
+    var dom = scope.dom;
+    for (var i=0; i<dom.length; i++) {
+      var node = dom[i]; // Node|Scope.
+      // ignore child scopes here, because they're also in `scope.inner`.
+      if (node instanceof Node) {
+        node.parentNode.removeChild(node);
+      }
+    }
+    scope.dom.length = 0;
+    // reset all inner [child] scopes.
+    // TODO: don't need to remove dom from all inner scopes [only top-level ones!]
+    var inner = scope.inner;
+    for (var i=0; i<inner.length; i++) {
+      reset_scope(inner[i]);
+    }
+    // TODO: remove watches.
   }
 
   function name_from_scope(scope, name) {
@@ -176,71 +195,116 @@
     return node;
   }
 
-  function dep_upd_node_attr(dep) {
+  function dep_upd_text_attr(dep) {
     // update a DOM Element attribute from an input dep's value.
     var node = dep.node;
     var name = dep.name;
     var val = dep.from.value;
-    if (typeof(node[name]) === 'boolean') {
-      console.log("BOOLEAN:", name);
-      node[name] = !! is_true(val); // cast to boolean.
+    if (val == null) { // or undefined.
+      node.removeAttribute(name);
     } else {
-      if (val == null) { // or undefined.
-        node.removeAttribute(name);
-      } else {
-        node.setAttribute(name, is_text[typeof(val)] ? val : '');
-      }
+      node.setAttribute(name, is_text[typeof(val)] ? val : '');
     }
+  }
+
+  function dep_upd_bool_attr(dep) {
+    // update a DOM Element attribute from an input dep's value.
+    var node = dep.node;
+    var name = dep.name;
+    var val = dep.from.value;
+    console.log("BOOLEAN:", name);
+    node[name] = !! is_true(val); // cast to boolean.
+  }
+
+  function dep_upd_node_class(dep) {
   }
 
   function create_tag(doc, parent, after, scope, tpl) {
     var n = tpl.n;
     var tag = tpl[n+1];
-    var attrs = tpl[n+2];
-    var bindings = tpl[n+3];
-    var contents = tpl[n+4];
-    tpl.n = n+5;
+    var nattrs = tpl[n+2];
+    n += 3;
     var node = doc.createElement(tag);
-    // - className, htmlFor
-    // - style
-    for (var i=0; i<attrs.length; i+=2) {
-      var name = attrs[i];
-      var val = attrs[i+1];
-      if (typeof(node[name]) === 'boolean') {
-        console.log("BOOLEAN:", name);
-        node[name] = !! is_true(val); // cast to boolean.
-      } else {
-        node.setAttribute(name, val);
-      }
-    }
-    for (var i=0; i<bindings.length; i+=2) {
-      var name = bindings[i];
-      var text_tpl = bindings[i+1];
-      var dep = resolve_text_tpl(scope, text_tpl);
-      console.log("resolve:", name, text_tpl, dep);
-      if (dep.wait<0) {
-        // constant value.
-        // inline version of dep_upd_node_attr.
-        var val = dep.value;
-        if (typeof(node[name]) === 'boolean') {
-          console.log("BOOLEAN:", name);
-          node[name] = !! is_true(val); // cast to boolean.
-        } else {
-          if (val == null) { // or undefined.
-            node.removeAttribute(name);
+    var cls = [];
+    // apply attributes and bindings.
+    // these are sorted (grouped) by type in the compiler.
+    while (nattrs--) {
+      switch (tpl[n]) {
+        case 0:
+          // literal text.
+          node.setAttribute(tpl[n+1], tpl[n+2]);
+          n += 3;
+          break;
+        case 1:
+          // literal boolean.
+          node[tpl[n+1]] = !! tpl[n+2]; // cast to bool.
+          n += 3;
+          break;
+        case 2:
+          // bound text template.
+          var name = tpl[n+1];
+          var dep = resolve_text_tpl(scope, tpl[n+2]);
+          n += 3;
+          if (dep.wait<0) {
+            // constant value.
+            var val = dep.value;
+            if (val != null) { // or undefined.
+              node.setAttribute(name, is_text[typeof(val)] ? val : '');
+            }
           } else {
-            node.setAttribute(name, is_text[typeof(val)] ? val : '');
+            // varying value.
+            var watch = { value:null, wait:0, fwd:[], fn:dep_upd_text_attr, node:node, from:dep, name:name }; // dep.
+            dep.fwd.push(watch);
           }
-        }
-      } else {
-        // varying value.
-        var watch = { value:null, wait:0, fwd:[], fn:dep_upd_node_attr, node:node, from:dep, name:name }; // dep.
-        dep.fwd.push(watch);
+          break;
+        case 3:
+          // bound boolean expression.
+          var name = tpl[n+1];
+          var dep = resolve_in_scope(scope, tpl[n+2]);
+          n += 3;
+          if (dep.wait<0) {
+            // constant value.
+            node[name] = !! is_true(dep.value); // cast to bool.
+          } else {
+            // varying value.
+            var watch = { value:null, wait:0, fwd:[], fn:dep_upd_bool_attr, node:node, from:dep, name:name }; // dep.
+            dep.fwd.push(watch);
+          }
+          break;
+        case 4:
+          // literal class.
+          cls.push(tpl[n+1]);
+          n += 2;
+          break;
+        case 5:
+          // bound class boolean.
+          var name = tpl[n+1];
+          var dep = resolve_in_scope(scope, tpl[n+2]);
+          n += 3;
+          if (dep.wait<0) {
+            // constant value.
+            if (is_true(dep.value)) cls.push(name);
+          } else {
+            // varying value.
+            var watch = { value:null, wait:0, fwd:[], fn:dep_upd_node_class, node:node, from:dep, name:name }; // dep.
+            dep.fwd.push(watch);
+          }
+          break;
+        default:
+          error("tpl:", tpl[n]);
+          // cannot recover here - perhaps throw?
+          tpl.n = n+1;
+          return node;
       }
     }
+    if (cls.length) node.className += cls.join(' ');
+    // - htmlFor
+    // - style
     insert_after(parent, after, node);
     // passing null `after` because we use our own DOM node as `parent`,
     // so there is never a _previous sibling_ DOM node for our contents.
+    var contents = tpl[n];
+    tpl.n = n+1;
     spawn_tpl(doc, node, null, contents, scope, null);
     return node;
   }
@@ -263,8 +327,8 @@
     }
     for (var i=0; i<bindings.length; i+=2) {
       var name = bindings[i];
-      var binding = bindings[i+1];
-      inner.binds[name] = bind_to_scope(scope, binding); // make a dep.
+      var expr = bindings[i+1];
+      inner.binds[name] = resolve_in_scope(scope, expr); // make a dep.
     }
     // pass through `parent` and `after` so the component tpl will be created inline,
     // as if the component were replaced with its contents.
@@ -274,88 +338,131 @@
     return inner;
   }
 
+  function dep_upd_condition(dep) {
+    // create or destroy the `contents` based on boolean `value`.
+    if (is_true(dep.value)) {
+      if (!dep.present) {
+        dep.present = true;
+        // spawn all dom nodes, bind watches to deps in the scope.
+        // pass through `parent` and `after` so the contents will be created inline.
+        spawn_tpl(document, dep.parent, dep.after, dep.contents, dep.inner, dep.inner.dom);
+      }
+    } else {
+      if (dep.present) {
+        dep.present = false;
+        // remove all [top-level] dom nodes and unbind all watches.
+        // NB. need a list: watches can be bound to parent scopes!
+        reset_scope(dep.inner);
+      }
+    }
+  }
+
   function create_condition(doc, parent, after, scope, tpl) {
-    // Creates a scope representing the contents of the condition node.
+    // Creates a scope (v-dom) representing the contents of the condition node.
     // The scope toggles between active (has dom nodes) and inactive (empty).
     // TODO: must bind all locally defined names in the scope up-front.
     var n = tpl.n;
-    var binding = tpl[n+1];
+    var expr = tpl[n+1];
     var contents = tpl[n+2];
     tpl.n = n+3;
     var inner = Scope(scope, scope.contents); // component `contents` available within `if` nodes.
-    var present = false;
-    bind_to_scope(scope, binding, function (val, name) {
-      if (is_true(val)) {
-        if (!present) {
-          present = true;
-          // spawn all dom nodes, bind watches to deps in the scope.
-          // pass through `parent` and `after` so the contents will be created inline.
-          spawn_tpl(doc, parent, after, contents, inner, inner.dom);
-        }
-      } else {
-        if (present) {
-          present = false;
-          // remove all [top-level] dom nodes and unbind all watches.
-          // NB. need a list: watches can be bound to parent scopes!
-          reset_scope(inner);
-        }
+    var dep = resolve_in_scope(scope, expr);
+    if (dep.wait<0) {
+      // constant value.
+      if (is_true(dep.value)) {
+        // spawn the contents into the inner scope.
+        spawn_tpl(doc, parent, after, contents, inner, inner.dom);
       }
-    });
+    } else {
+      // varying value.
+      var watch = { value:null, wait:0, fwd:[], fn:dep_upd_condition, parent:parent, after:after, contents:contents, inner:inner, present:false }; // dep.
+      dep.fwd.push(watch);
+    }
     // Must return a Scope to act as `after` for a subsequent Scope node.
     return inner;
   }
 
+  function dep_upd_repeat(dep) {
+    var doc = document;
+    var seq = dep.value instanceof Array ? dep.value : [];
+    var parent = dep.parent;
+    var after = dep.after; // start at `after` so our contents will follow its DOM nodes.
+    var contents = dep.contents;
+    var bind_as = dep.bind_as;
+    var outer = dep.outer;
+    var has = dep.has;
+    var used = {};
+    outer.dom.length = 0; // must rebuild for `insert_after` in following nodes.
+    outer.inner.length = 0; // must rebuild the list of inner scopes.
+    for (var i=0; i<seq.length; i++) {
+      var model = seq[i];
+      var key = model ? (model.id || i) : i; // KEY function.
+      used[key] = true;
+      var inner;
+      if (hasOwn.call(has, key)) {
+        inner = has[key];
+        // retained: add it back to the list of inner scopes.
+        outer.dom.push(inner);
+        outer.inner.push(inner);
+        // move the existing dom nodes into the correct place (if order has changed)
+        move_scope(inner, parent, after);
+      } else {
+        // create an inner scope with bind_as bound to the model.
+        inner = Scope(outer, outer.contents); // component `contents` available within `repeat` nodes.
+        inner.binds[bind_as] = { value:model, wait:-1, fwd:null, fn:null }; // dep.
+        has[key] = inner;
+        spawn_tpl(doc, parent, after, contents, inner, inner.dom);
+        outer.dom.push(inner);
+        // NB. new scope adds itself to outer.inner.
+      }
+      after = inner;
+    }
+    // destroy all unused inner-scopes.
+    for (var key in has) {
+      if (hasOwn.call(has, key) && !hasOwn.call(used, key)) {
+        var inner = has[key];
+        // remove dom nodes and unbind watches.
+        reset_scope(inner);
+        // discard the scope for GC.
+        delete has[key];
+      }
+    }
+  }
+
+  function repeat_once(doc, parent, after, seq, contents, bind_as, outer) {
+    for (var i=0; i<seq.length; i++) {
+      var model = seq[i];
+      var key = model ? (model.id || i) : i; // KEY function.
+      var inner = Scope(outer, outer.contents); // component `contents` available within `repeat` nodes.
+      inner.binds[bind_as] = { value:model, wait:-1, fwd:null, fn:null }; // dep.
+      spawn_tpl(doc, parent, after, contents, inner, inner.dom);
+      outer.dom.push(inner);
+      after = inner;
+    }
+  }
+
   function create_repeat(doc, parent, after, scope, tpl) {
+    // Creates a scope (v-dom) representing the contents of the repeat node.
+    // When the expression value changes, iterates over the new value creating
+    // and destroying repeats to bring the view into sync with the value.
     var n = tpl.n;
-    var binding = tpl[n+1];
+    var expr = tpl[n+1];
     var bind_as = tpl[n+2];
     var contents = tpl[n+3];
     tpl.n = n+4;
-    // RESOLVE: doesn't need to be a scope, but does need to support 
-    // `dom` for insert_after and move_scope, and `reset_scope` for destroy.
     var outer = Scope(scope, scope.contents); // component `contents` available within `repeat` nodes.
-    var has = {}; // scope if currently in-document.
-    bind_to_scope(scope, binding, function (val, name) {
-      var seq = val instanceof Array ? val : [];
-      // start at `after` so our contents will follow its DOM nodes.
-      var ins_after = after;
-      var used = {};
-      outer.dom.length = 0; // must rebuild for `insert_after` in following nodes.
-      outer.in.length = 0; // must rebuild the list of child scopes.
-      for (var i=0; i<seq.length; i++) {
-        var model = seq[i];
-        var key = model ? (model.id || i) : i;
-        used[key] = true;
-        var inner;
-        if (hasOwn.call(has, key)) {
-          inner = has[key];
-          // retained: add it back to the list of child scopes.
-          outer.dom.push(inner);
-          outer.in.push(inner);
-          // move the existing dom nodes into the correct place (if order has changed)
-          move_scope(inner, parent, ins_after);
-        } else {
-          // create an inner scope with bind_as bound to the model.
-          inner = Scope(outer, scope.contents); // component `contents` available within `repeat` nodes.
-          inner.binds[bind_as] = { value:model, wait:-1, fwd:null, fn:null }; // dep.
-          has[key] = inner;
-          spawn_tpl(doc, parent, ins_after, contents, inner, inner.dom);
-          outer.dom.push(inner);
-          // NB. new scope adds itself to outer.in.
-        }
-        ins_after = inner;
+    var dep = resolve_in_scope(scope, expr);
+    if (dep.wait<0) {
+      // constant value.
+      if (dep.value instanceof Array) {
+        repeat_once(doc, parent, after, dep.value, contents, bind_as, outer);
       }
-      // destroy all unused inner-scopes.
-      for (var key in has) {
-        if (hasOwn.call(has, key) && !hasOwn.call(used, key)) {
-          var inner = has[key];
-          // remove dom nodes and unbind watches.
-          reset_scope(inner);
-          // discard the scope for GC.
-          delete has[key];
-        }
-      }
-    });
+    } else {
+      // varying value.
+      var watch = { value:null, wait:0, fwd:[], fn:dep_upd_repeat, parent:parent, after:after,
+                    contents:contents, bind_as:bind_as, outer:outer, has:{} }; // dep.
+      dep.fwd.push(watch);
+    }
     return outer;
   }
 
@@ -388,6 +495,7 @@
 
   manglr.bind_doc = function (doc, tpl) {
     var root_scope = Scope(null, null);
+    console.log(root_scope); // DEBUGGING.
     spawn_tpl(doc, doc.body, null, tpl, root_scope, null);
   };
 
