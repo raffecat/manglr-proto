@@ -130,16 +130,20 @@
     parent.insertBefore(node, last ? last.nextSibling : parent.firstChild);
   }
 
-  function create_text(doc, parent, after, scope, tpl, n) {
+  function create_text(doc, parent, after, scope, tpl) {
     // create a text node: [0, "text"]
+    var n = tpl.n;
     var node = doc.createTextNode(tpl[n+1]);
+    tpl.n = n+2;
     insert_after(parent, after, node);
     return node;
   }
 
-  function create_bound(doc, parent, after, scope, tpl, n) {
+  function create_bound(doc, parent, after, scope, tpl) {
     // create a bound text node.
+    var n = tpl.n;
     var binding = tpl[n+1]; // [1, ["name", ...]]
+    tpl.n = n+2;
     var node = doc.createTextNode('');
     var dep = resolve_in_scope(scope, binding);
     if (dep) {
@@ -162,6 +166,7 @@
   function bind_tag_attr(node, name, dep) {
     dep.watch(function (val) {
       if (typeof(node[name]) === 'boolean') {
+        console.log("BOOLEAN:", name);
         node[name] = !! is_true(val); // cast to boolean.
       } else {
         if (val == null) { // or undefined.
@@ -174,11 +179,13 @@
     });
   }
 
-  function create_tag(doc, parent, after, scope, tpl, n) {
+  function create_tag(doc, parent, after, scope, tpl) {
+    var n = tpl.n;
     var tag = tpl[n+1];
     var attrs = tpl[n+2];
     var bindings = tpl[n+3];
     var contents = tpl[n+4];
+    tpl.n = n+5;
     var node = doc.createElement(tag);
     // - className, htmlFor
     // - style
@@ -186,6 +193,7 @@
       var name = attrs[i];
       var val = attrs[i+1];
       if (typeof(node[name]) === 'boolean') {
+        console.log("BOOLEAN:", name);
         node[name] = !! is_true(val); // cast to boolean.
       } else {
         node.setAttribute(name, val);
@@ -199,6 +207,7 @@
         if (t === 'string' || t === 'number') {
           // constant value.
           if (typeof(node[name]) === 'boolean') {
+            console.log("BOOLEAN:", name);
             node[name] = !! is_true(dep); // cast to boolean.
           } else {
             if (dep == null) { // or undefined.
@@ -217,15 +226,17 @@
     insert_after(parent, after, node);
     // passing null `after` because we use our own DOM node as `parent`,
     // so there is never a _previous sibling_ DOM node for our contents.
-    spawn_dom(doc, node, null, contents, scope, null);
+    spawn_tpl(doc, node, null, contents, scope, null);
     return node;
   }
 
-  function create_component(doc, parent, after, scope, tpl, n) {
+  function create_component(doc, parent, after, scope, tpl) {
+    var n = tpl.n;
     var comp = tpl[n+1];
     var attrs = tpl[n+2];
     var bindings = tpl[n+3];
     var contents = tpl[n+4];
+    tpl.n = n+5;
     // component has its own scope because it has its own namespace for bound names,
     // but doesn't have an independent lifetime (destroyed with the parent scope)
     var inner = Scope(scope, contents); // component instance `contents` (a tpl)
@@ -241,18 +252,20 @@
     }
     // pass through `parent` and `after` so the component tpl will be created inline,
     // as if the component were replaced with its contents.
-    spawn_dom(doc, parent, after, comp.tpl, inner, inner.dom);
+    spawn_tpl(doc, parent, after, comp.tpl, inner, inner.dom);
     // Must return a Scope to act as `after` for a subsequent Scope node.
     // The scope `dom` must contain all top-level DOM Nodes and Scopes in the tpl.
     return inner;
   }
 
-  function create_condition(doc, parent, after, scope, tpl, n) {
+  function create_condition(doc, parent, after, scope, tpl) {
     // Creates a scope representing the contents of the condition node.
     // The scope toggles between active (has dom nodes) and inactive (empty).
     // TODO: must bind all locally defined names in the scope up-front.
+    var n = tpl.n;
     var binding = tpl[n+1];
     var contents = tpl[n+2];
+    tpl.n = n+3;
     var inner = Scope(scope, scope.contents); // component `contents` available within `if` nodes.
     var present = false;
     bind_to_scope(scope, binding, function (val, name) {
@@ -261,7 +274,7 @@
           present = true;
           // spawn all dom nodes, bind watches to deps in the scope.
           // pass through `parent` and `after` so the contents will be created inline.
-          spawn_dom(doc, parent, after, contents, inner, inner.dom);
+          spawn_tpl(doc, parent, after, contents, inner, inner.dom);
         }
       } else {
         if (present) {
@@ -276,10 +289,12 @@
     return inner;
   }
 
-  function create_repeat(doc, parent, after, scope, tpl, n) {
+  function create_repeat(doc, parent, after, scope, tpl) {
+    var n = tpl.n;
     var binding = tpl[n+1];
     var bind_as = tpl[n+2];
     var contents = tpl[n+3];
+    tpl.n = n+4;
     // RESOLVE: doesn't need to be a scope, but does need to support 
     // `dom` for insert_after and move_scope, and `reset_scope` for destroy.
     var outer = Scope(scope, scope.contents); // component `contents` available within `repeat` nodes.
@@ -308,7 +323,7 @@
           inner = Scope(outer, scope.contents); // component `contents` available within `repeat` nodes.
           inner.binds[bind_as] = model;
           has[key] = inner;
-          spawn_dom(doc, parent, ins_after, contents, inner, inner.dom);
+          spawn_tpl(doc, parent, ins_after, contents, inner, inner.dom);
           outer.dom.push(inner);
           // NB. new scope adds itself to outer.in.
         }
@@ -336,54 +351,56 @@
     create_condition,  // 4
     create_repeat,     // 5
   ];
-  var advance = [
-    2, // create_text
-    2, // create_bound
-    5, // create_tag
-    5, // create_component
-    3, // create_condition
-    4, // create_repeat
-  ];
 
-  function spawn_dom(doc, parent, after, tpl, scope, capture) {
+  function spawn_tpl(doc, parent, after, tpl, scope, capture) {
     // spawn a list of children within a tag, component, if/repeat.
     // in order to move dom subtrees, scopes must capture child nodes.
-    for (var i=0; i<tpl.length; ) {
-      var op = tpl[i];
-      // console.log("create", i, op);
-      var next = create[op](doc, parent, after, scope, tpl, i);
-      i += advance[op];
+    var save_n = tpl.n; // cursor: mutated on tpl! (no multiple returns in js)
+    tpl.n = 0; // ^ not willing to pay for [] return or closures, so.
+    while (tpl.n < tpl.length) {
+      var op = tpl[tpl.n];
+      // console.log("create", tpl.n, op);
+      var next = create[op](doc, parent, after, scope, tpl);
       next.bk = after; // backwards link for finding previous DOM nodes.
       if (capture) capture.push(next); // capture top-level nodes in a scope.
       after = next;
     }
+    tpl.n = save_n; // must restore because tpl can be recursive.
   }
 
   // ---- parsing components ----
 
-  var tpl_re = new RegExp("\{\s*([^}]*)\s*\}","y");
+  var tpl_re = new RegExp("([^{]*){?([^}]*)}?","y");
+  var norm_re = new RegExp("\\s+", "g")
+
+  function norm_ws(text) {
+    return text.replace(norm_re, " ");
+  }
 
   function parse_text_tpl(text, tpl) {
-    var pos = text.indexOf('{');
-    // console.log("parse_text_tpl:", pos, text);
-    if (~pos) {
-      tpl_re.lastIndex = 0;
-      for (;;) {
-        var match = tpl_re.exec(text);
-        if (match) {
-          var start = match.index;
-          if (start > pos) tpl.push(0, text.substring(pos, start));
-          tpl.push(1, match[1].split('.'));
-          pos = match.lastIndex;
-        } else {
-          var len = text.length;
-          if (len > pos) tpl.push(0, text.substring(pos, len));
-          break;
-        }
-      }
-    } else {
-      tpl.push(0, text);
+    tpl_re.lastIndex = 0;
+    var i = 0;
+    for (;;) {
+      var match = tpl_re.exec(text);
+      if (!match || !match[0]) break; // will match ["", "", ""] at the end!
+      var literal = match[1];
+      var expr = match[2];
+      if (literal) tpl.push(0, literal);
+      if (expr) tpl.push(1, expr.split('.'));
+      // tpl_re.lastIndex = match.index + match[0].length;
+      if (i++ > 1000) throw "stop";
     }
+  }
+
+  function parse_children(node, c_tags) {
+    // parse child nodes into their own tpl.
+    var children = [];
+    var child = node.firstChild;
+    while (child != null) {
+      parse_tpl(child, children, c_tags);
+      child = child.nextSibling;
+    }
+    return children;
   }
 
   function parse_tpl(node, tpl, c_tags) {
@@ -416,13 +433,7 @@
           }
         }
       }
-      // parse child nodes into their own tpl.
-      var children = [];
-      var child = node.firstChild;
-      while (child != null) {
-        parse_tpl(child, children, c_tags);
-        child = child.nextSibling;
-      }
+      var children = parse_children(node, c_tags);
       // match tag names against component tag-names in scope.
       var comp = c_tags[tag];
       if (comp) {
@@ -506,16 +517,10 @@
 
   function parse_body(c_tags) {
     var body = document.body;
-    var first = body.firstChild;
     // parse children of the body into a tpl.
-    var tpl = [];
-    var child = first;
-    while (child != null) {
-      parse_tpl(child, tpl, c_tags);
-      child = child.nextSibling;
-    }
+    var tpl = parse_children(body, c_tags);
     // remove the children of body.
-    var child = first;
+    var child = body.firstChild;
     while (child != null) {
       var next = child.nextSibling;
       body.removeChild(child);
@@ -531,8 +536,9 @@
     find_components(doc);
     // parse the document body into a template like the AoT compiler would.
     var tpl = parse_body(root_component.tags);
+    console.log("BODY:", tpl);
     // spawn the document body.
-    spawn_dom(doc, doc.body, null, tpl, scope, null);
+    spawn_tpl(doc, doc.body, null, tpl, scope, null);
   }
 
   // ---- registration ----
