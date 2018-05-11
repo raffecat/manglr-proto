@@ -5,7 +5,8 @@
   var nextSid = 1;
   var null_dep = { value:null, wait:-1, fwd:null, fn:null }; // dep.
   var is_text = { "boolean":1, "number":1, "string":1, "symbol":1, "undefined":0, "object":0, "function":0 };
-  var error = window.console && console.log || function(){};
+  var c = window.console, log = c ? c.log.bind(c) : function(){}; c=null;
+  var tpl_set; // Array of tpls.
 
   // ---- scopes and deps ----
 
@@ -15,10 +16,6 @@
     var s = { id:'s'+(nextSid++), binds:{}, up:up, contents:contents, dom:[], watch:[], inner:[] };
     if (up) up.inner.push(s); // register to be destroyed with enclosing scope.
     return s;
-  }
-
-  function bind_to_scope(scope, binding, func) {
-    // resolve binding - text_tpl or value, might be literal text?
   }
 
   function move_scope(scope, parent, after) {
@@ -99,7 +96,7 @@
     return dep;
   }
 
-  function dep_upd_text_tpl(dep) {
+  function dep_upd_concat_text(dep) {
     // concatenate text fragments from each input dep.
     var args = dep.args;
     var text = "";
@@ -111,16 +108,28 @@
   }
 
   function resolve_text_tpl(scope, tpl) {
-    var args = [];
-    var dep = { value:"", wait:0, fwd:[], fn:dep_upd_text_tpl, args:args }; // dep.
-    for (var i=0; i<tpl.length; i += 2) {
-      var arg = tpl[i+1];
-      switch (tpl[i]) {
-        case 0: args.push({value:arg}); // literal text.
-        case 1: args.push(resolve_in_scope(scope, arg)); // expression.
+    // text template: concatenation of text literals and expression results.
+    // TODO: make this a `concat` operator in an expression tree.
+    var dep;
+    if (tpl.length == 2) {
+      // resolve a single literal text or expression -> return that dep.
+      switch (tpl[0]) {
+        case 0: return { value:tpl[1], wait:-1, fwd:null, fn:null }; // dep.
+        case 1: return resolve_in_scope(scope, tpl[1]); // expression.
       }
+    } else {
+      // create a dep that updates after all arguments have updated.
+      var args = [];
+      var dep = { value:"", wait:0, fwd:[], fn:dep_upd_concat_text, args:args }; // dep.
+      for (var i=0; i<tpl.length; i += 2) {
+        var arg = tpl[i+1];
+        switch (tpl[i]) {
+          case 0: args.push({ value:arg }); // literal text.
+          case 1: args.push(resolve_in_scope(scope, arg)); // expression.
+        }
+      }
+      return dep;
     }
-    return dep;
   }
 
   // ---- creating templates ----
@@ -188,7 +197,7 @@
     } else {
       // varying value.
       var watch = { value:null, wait:0, fwd:[], fn:dep_upd_text_node, node:node, from:dep }; // dep.
-      console.log("dep on:", dep);
+      log("dep on:", dep);
       dep.fwd.push(watch);
     }
     insert_after(parent, after, node);
@@ -212,7 +221,6 @@
     var node = dep.node;
     var name = dep.name;
     var val = dep.from.value;
-    console.log("BOOLEAN:", name);
     node[name] = !! is_true(val); // cast to boolean.
   }
 
@@ -280,6 +288,7 @@
           // bound class boolean.
           var name = tpl[n+1];
           var dep = resolve_in_scope(scope, tpl[n+2]);
+          log("BIND-CLASS:", name, tpl[n+2], dep);
           n += 3;
           if (dep.wait<0) {
             // constant value.
@@ -291,7 +300,7 @@
           }
           break;
         default:
-          error("tpl:", tpl[n]);
+          log("tpl:", tpl[n]);
           // cannot recover here - perhaps throw?
           tpl.n = n+1;
           return node;
@@ -332,7 +341,8 @@
     }
     // pass through `parent` and `after` so the component tpl will be created inline,
     // as if the component were replaced with its contents.
-    spawn_tpl(doc, parent, after, comp.tpl, inner, inner.dom);
+    var comp_tpl = tpl_set[comp];
+    spawn_tpl(doc, parent, after, comp_tpl, inner, inner.dom);
     // Must return a Scope to act as `after` for a subsequent Scope node.
     // The scope `dom` must contain all top-level DOM Nodes and Scopes in the tpl.
     return inner;
@@ -482,7 +492,7 @@
     tpl.n = 0; // ^ not willing to pay for [] return or closures, so.
     while (tpl.n < tpl.length) {
       var op = tpl[tpl.n];
-      // console.log("create", tpl.n, op);
+      // log("create", tpl.n, op);
       var next = create[op](doc, parent, after, scope, tpl);
       next.bk = after; // backwards link for finding previous DOM nodes.
       if (capture) capture.push(next); // capture top-level nodes in a scope.
@@ -493,10 +503,11 @@
 
   // ---- init ----
 
-  manglr.bind_doc = function (doc, tpl) {
+  manglr.bind_doc = function (doc, tpls) {
+    tpl_set = tpls;
     var root_scope = Scope(null, null);
-    console.log(root_scope); // DEBUGGING.
-    spawn_tpl(doc, doc.body, null, tpl, root_scope, null);
+    log(root_scope); // DEBUGGING.
+    spawn_tpl(doc, doc.body, null, tpls[0], root_scope, null);
   };
 
 })(manglr);

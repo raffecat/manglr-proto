@@ -10,8 +10,9 @@ manglr = (function(){
   var directives = {}; // registry.
   var prefixes = {};   // registry.
   var prefixes_dirty = true;
-  var root_component = { id:'c0', tags:{} };
+  var root_component = { id:'c0', cid:0, tags:{}, tpl:[] };
   var components = { c0:root_component }; // index.
+  var comp_list = [root_component];
   var has_loaded = false;
   var bool_attr = "allowFullscreen|async|autofocus|autoplay|checked|compact|controls|declare|default|defaultChecked|defaultMuted|defaultSelected|defer|disabled|draggable|enabled|formNoValidate|hidden|indeterminate|inert|isMap|itemScope|loop|multiple|muted|noHref|noResize|noShade|noValidate|noWrap|open|pauseOnExit|readOnly|required|reversed|scoped|seamless|selected|sortable|spellcheck|translate|trueSpeed|typeMustMatch|visible";
   var bool_map = {};
@@ -47,12 +48,32 @@ manglr = (function(){
   // a safe api: requires the handler to return what it wants done,
   // in a form we can verify before encoding in the template.
 
+  function Expr() {}
+  function BindClass(name, expr) { this.name=name; this.expr=expr; }
+  function IfCond(expr) { this.expr=expr; }
+
+  // maybe pass a new VNode with [these] API methods, and close it on return.
+
   var api = {
     expr: function(src) { return src.split('.'); },
     text: function(src) { var tpl=[]; parse_text_tpl(src, tpl); return tpl; },
     cond: function(expr, node) { return [3, expr, [node]]; },
-    opcode: function(name) { return [80, name]; }, // register and gen index.
     unary: function(op, arg) { return [op, arg]; },
+    bind_class: function (name, expr) {
+      if (typeof(name) != 'string') throw new Error("bind_class: name must be a string");
+      if (!(expr instanceof Expr)) throw new Error("bind_class: expr must be from api.expr()");
+      return new BindClass(name, expr);
+    },
+    if_cond: function (cond) {
+      if (!(expr instanceof Expr)) throw new Error("if_cond: expr must be from api.expr()");
+      return new IfCond(expr);
+    },
+  };
+
+  var ops = {
+    bind_class: 5,
+    bind_style: 6,
+    if_route: 7,
   };
 
   directives['if'] = function (name, value, node) {
@@ -60,7 +81,7 @@ manglr = (function(){
     // - remove the `if` attribute (implied by the handler)
     // - compile the expression in the scope of `node` [repeat creates its own scopes]
     // - wrap the node in a condition node.
-    return api.cond(api.expr(value), node);
+    return api.if_cond(api.expr(value));
   };
 
   directives['if-route'] = function (name, value, node) {
@@ -68,8 +89,7 @@ manglr = (function(){
     // - remove the `if` attribute (implied by the handler)
     // - compile the expression in the scope of `node` [repeat creates its own scopes]
     // - wrap the node in a condition node.
-    var match = api.opcode('router.match');
-    var cond = api.unary(match, api.text(value));
+    var cond = api.unary(ops.if_route, api.text(value));
     return api.cond(cond, node);
   };
 
@@ -77,19 +97,14 @@ manglr = (function(){
 
   prefixes['class-'] = function(name, value, node) {
     console.log("CLASS:", name, value, node);
-    // - remove the `class-name` attribute (implied by the handler)
-    // - compile the expression in the scope of `node`.
-    // - add a run-time class binding to the node.
-    var bind_class = api.opcode('bind.class');
     var expr = api.expr(value);
-    return [bind_class, name, expr];
+    return [ops.bind_class, name, expr];
   };
 
   prefixes['style-'] = function(name, value, node) {
     console.log("STYLE:", name, value, node);
-    // - remove the `style-name` attribute (implied by the handler)
-    // - compile the expression in the scope of `node`.
-    // - add a run-time style binding to the node.
+    var expr = api.expr(value);
+    return [ops.bind_style, name, expr];
   };
 
   function rebuild_prefixes() {
@@ -143,103 +158,112 @@ manglr = (function(){
     // parse a tpl out of the dom for spawning.
     var nodeType = node.nodeType;
     if (nodeType == 1) { // Element.
-      // check if the tag has a custom handler.
       var tag = node.nodeName.toLowerCase();
       if (tag === 'component' || tag === 'script') return; // elide from tpl.
-      // parse attributes.
-      var attrs = node.attributes; // NB. Document does not have attributes.
-      var raw = [];
-      var binds = [];
-      for (var i=0,n=attrs&&attrs.length; i<n; i++) {
-        var attr = attrs[i];
-        // compatibility: old versions of IE iterate over non-present attributes.
-        if (attr.specified) {
-          var name = attr.name;
-          var name_lc = name.toLowerCase();
-          var value = attr.value;
-          // check if the attribute name matches any registered handler.
-          var handler = directives[name_lc];
-          if (handler) {
-              var expr = handler(name, value, node);
-              if (expr instanceof Array) binds.push(name, expr); else error(node, 12, name);
-              continue;
-          }
-          // check if the attribute matches any registered prefix.
-          if (~name_lc.indexOf('-')) {
-            var m = name_lc.match(prefix_re);
-            if (m) {
-              var prefix = m[0];
-              var suffix = name.substr(prefix.length);
-              // custom binding handler.
-              var handler = prefixes[prefix];
-              var expr = handler(suffix, value, node);
-              if (expr instanceof Array) binds.push(name, expr); else error(node, 12, name);
-              continue;
-            } else {
-              // warn if the attribute is not a standard HTML attribute.
-              if (!std_attr.test(name_lc)) error(node, 1, name);
-            }
-          }
-          // TODO: also need to handle `if` and `repeat` here - wraps this node!
-          // TODO: `route` custom-tag will wrap its contents in an `if` node.
-          if (~value.indexOf('{')) {
-            var bound = [];
-            parse_text_tpl(value, bound);
-            binds.push(name, bound);
-          } else {
-            raw.push(name, value);
-          }
-        }
-      }
+      var attrs = node.attributes;
       var children = parse_children(node, c_tags);
-      // match tag names against component tag-names in scope.
-      var comp = c_tags[tag];
+      var comp = c_tags[tag]; // is it a component instance? (changes attribute encoding)
       if (comp) {
-        console.log("matched component in tpl: "+tag);
-        tpl.push(3, comp, raw, binds, children); // create_component.
+        // instance of a component.
+        var raw = [];
+        var binds = [];
+        for (var i=0,n=attrs&&attrs.length; i<n; i++) {
+          var attr = attrs[i];
+          if (attr.specified) {
+            var name = attr.name;
+            var value = attr.value;
+            // TODO: if directives cannot be applied to components,
+            // how can they be used with `if` and `repeat` and `if-route` ?!
+            if (~value.indexOf('{')) {
+              var bound = [];
+              parse_text_tpl(value, bound);
+              binds.push(name, bound);
+            } else {
+              raw.push(name, value);
+            }
+          }
+        }
+        tpl.push(3, comp.cid, raw, binds, children); // create_component.
       } else {
-        // debugging: report custom tag names if not a component.
-        if (~tag.indexOf('-')) error(node, 3, tag);
-        tpl.push(2, tag, 0); // create_tag.
-        var num_ofs = tpl.length - 1; // save offset to patch later.
+        // HTML element.
+        if (~tag.indexOf('-')) error(node, 3, tag); // debugging: report custom tag names if not a component.
+        var binds = [];
         var num_attr = 0;
-        // encode attributes for the runtime.
-        for (var i=0; i<raw.length; i += 2) {
-          var name = raw[i], value = raw[i+1];
-          if (name.toLowerCase() === 'class') {
-            // special case: each class is handled individually.
-            var names = value.split(/\s+/g);
-            for (var c=0; c<names.length; c++) {
-              tpl.push(4, names[c]); // literal class.
-              num_attr++;
+        for (var i=0,n=attrs&&attrs.length; i<n; i++) {
+          var attr = attrs[i];
+          if (attr.specified) {
+            var name = attr.name;
+            var name_lc = name.toLowerCase();
+            var value = attr.value;
+            // check if the attribute name matches any registered handler.
+            var handler = directives[name_lc];
+            if (handler) {
+                var expr = handler(name, value, node);
+                if (expr instanceof Array) {
+                  binds.push.apply(binds, expr);
+                  num_attr++;
+                } else error(node, 12, name);
+                continue;
             }
-          } else {
-            if (hasOwn.call(bool_map, name)) {
-              // map the name to the correct property case.
-              tpl.push(1, bool_map[name], true); // literal boolean.
-              num_attr++;
+            // check if the attribute matches any registered prefix.
+            if (~name_lc.indexOf('-')) {
+              var m = name_lc.match(prefix_re);
+              if (m) {
+                var prefix = m[0];
+                var suffix = name.substr(prefix.length);
+                // custom binding handler.
+                var handler = prefixes[prefix];
+                var expr = handler(suffix, value, node);
+                if (expr instanceof Array) {
+                  binds.push.apply(binds, expr);
+                  num_attr++;
+                } else error(node, 12, name);
+                continue;
+              } else {
+                // warn if the attribute is not a standard HTML attribute.
+                if (!std_attr.test(name_lc)) error(node, 1, name);
+              }
+            }
+            // TODO: also need to handle `if` and `repeat` here - wraps this node!
+            // TODO: `route` custom-tag will wrap its contents in an `if` node.
+            if (~value.indexOf('{')) {
+              if (name_lc === 'class') {
+                // TODO: cannot bind `class` directly -> parse as a text-tpl and split it.
+                error(node, 13, expr);
+              } else {
+                var expr = [];
+                parse_text_tpl(value, expr);
+                if (hasOwn.call(bool_map, name)) {
+                  // map the name to the correct property case.
+                  binds.push(3, bool_map[name], expr); // bound boolean.
+                  num_attr++;
+                } else {
+                  binds.push(2, name, expr); // bound text-template.
+                  num_attr++;
+                }
+              }
             } else {
-              tpl.push(0, name, value); // literal text.
-              num_attr++;
+              // plain attribute value.
+              if (name_lc === 'class') {
+                // special case: each class must be handled individually.
+                var names = value.split(/\s+/g);
+                for (var c=0; c<names.length; c++) {
+                  binds.push(4, names[c]); // literal class.
+                  num_attr++;
+                }
+              } else if (hasOwn.call(bool_map, name)) {
+                // map the name to the correct property case.
+                binds.push(1, bool_map[name], true); // literal boolean.
+                num_attr++;
+              } else {
+                binds.push(0, name, value); // literal text.
+                num_attr++;
+              }
             }
           }
         }
-        for (var i=0; i<binds.length; i += 2) {
-          var name = binds[i], expr = binds[i+1];
-          if (name.toLowerCase() === 'class') {
-            error(node, 13, value);
-          } else {
-            if (hasOwn.call(bool_map, name)) {
-              // map the name to the correct property case.
-              tpl.push(3, bool_map[name], expr); // bound boolean.
-              num_attr++;
-            } else {
-              tpl.push(2, name, expr); // bound text-template.
-              num_attr++;
-            }
-          }
-        }
-        tpl[num_ofs] = num_attr;
+        tpl.push(2, tag, num_attr); // create_tag.
+        tpl.push.apply(tpl, binds);
         tpl.push(children);
       }
     } else if (nodeType == 3) { // Text.
@@ -257,11 +281,13 @@ manglr = (function(){
     for (var i=0,n=comp_nodes.length; i<n; i++) {
       var node = comp_nodes[i];
       // assign each component a unique id.
-      var sid = 'c'+(nextSid++);
+      var cid = nextSid++;
+      var sid = 'c'+cid;
       node[is_scope] = sid;
       // index components so we can find parent components.
-      var comp = { id:sid, tags:{}, node:node, tpl:[] };
+      var comp = { id:sid, cid:cid, tags:{}, tpl:[], node:node };
       components[sid] = comp;
+      comp_list.push(comp);
       found.push(comp);
       // find the enclosing component - will already be in `components`.
       var parent = node.parentNode;
@@ -333,9 +359,14 @@ manglr = (function(){
     // must find all component tags first, since they affect walk_dom.
     find_components(doc);
     // parse the document body into a template like the AoT compiler would.
-    var tpl = parse_body(root_component.tags);
-    console.log("BODY:", tpl);
-    return tpl;
+    root_component.tpl = parse_body(root_component.tags);
+    var payload = [];
+    for (var i=0; i<comp_list.length; i++) {
+      payload.push(comp_list[i].tpl);
+    }
+    console.log("payload:", payload);
+    console.log(JSON.stringify(payload));
+    return payload;
   }
 
   // ---- registration ----

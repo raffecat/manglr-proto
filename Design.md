@@ -221,3 +221,41 @@ attributes like <img src="{url}"> will always cause problems in production.
 
 Could work around these: use a prefix 'v-' for bindings; <component> seems
 to be ok in modern browsers.
+
+
+## Compiling directives
+
+A safe public API for directives requires the handler to return what it wants
+done in a form we can verify before encoding in the template.
+
+For example: provide an API that creates `new` objects of internal types and
+validates their arguments [throw]; check `instanceof` on return to validate.
+
+Alternatively: provide an API that returns encoded lists, but validate those
+lists when returned - more work, more complexity, less error context!
+
+Spawn runtime: create the DOM node and set all literal attributes first,
+then iterate over bindings in order - batch by type in the compile step.
+
+Each binding can transform the node, returning a new node or passing it through.
+But is this necessary? The compile step can wrap nodes already.
+
+It might be necessary for third-party directives, which actually need to supply
+a script to bind (and unbind) the DOM nodes after creation. Use-cases here are
+things like Flot graphs, D3, time/date widgets, drag and drop.
+
+
+## Attributes vs Properties
+
+- https://quirksmode.org/dom/core/#attributes
+- https://www.drupal.org/node/1420706#comment-6423420
+- https://stackoverflow.com/questions/5874652/prop-vs-attr/5876747#5876747
+- https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes
+- https://developer.mozilla.org/en-US/docs/Web/API/element#Properties
+
+Links to specs:
+- http://www.w3.org/TR/DOM-Level-2-HTML/
+- http://www.w3.org/TR/DOM-Level-2-Core/
+- http://www.w3.org/TR/DOM-Level-3-Core/
+- https://www.w3.org/TR/domcore/
+- https://www.w3.org/TR/html5/
