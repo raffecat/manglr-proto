@@ -224,7 +224,41 @@
     node[name] = !! is_true(val); // cast to boolean.
   }
 
+  function addClass(elem, cls) {
+    var clist = elem.classList;
+    if (clist) {
+      // classList is fast and avoids spurious reflows.
+      clist.add(cls);
+    } else {
+      // check if the class is already present.
+      var classes = elem.className.split(' ');
+      for (var i=0; i<classes.length; i++) {
+        if (classes[i] === cls) return;
+      }
+      // cls was not found: add the class.
+      elem.className = classes + ' ' + cls;
+    }
+  }
+
+  function removeClass(elem, cls) {
+    var clist = elem.classList;
+    if (clist) {
+      // classList is fast and avoids spurious reflows.
+      clist.remove(cls);
+    } else {
+      var classes = elem.className.split(' '), orig = classes;
+      for (var i=0; i<classes.length; i++) {
+        if (classes[i] === cls) {
+          classes = classes.replace(cls,' ');
+        }
+      }
+      // avoid setting className unless we actually changed it.
+      if (classes !== org) elem.className = classes.slice(1,-1);
+    }
+  }
+
   function dep_upd_node_class(dep) {
+    (is_true(dep.value) ? addClass : removeClass)(dep.node, dep.name);
   }
 
   function create_tag(doc, parent, after, scope, tpl) {
