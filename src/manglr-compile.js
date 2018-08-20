@@ -72,6 +72,14 @@ manglr = (function(){
     tpl[patch] = tpl.length - patch; // size of inline tpl.
   }
 
+  function encode_named_nodes(tpl, pairs) {
+    tpl.push(pairs.length/2);
+    for (var i=0; i<pairs.length; i += 2) {
+      tpl.push(sym(pairs[i])); // name of the node.
+      pairs[i+1].encode(tpl);  // encode the node.
+    }
+  }
+
   var dom_ops = {
     text:       0,
     bound_text: 1,
@@ -121,11 +129,8 @@ manglr = (function(){
     // need to resolve components before encode to determine which ones are used?
     // const comp = scope.c_tags[this.name];
     // if (!comp) error(this.node, 'no component found (in scope) for custom tag "'+this.name+'"');
-    tpl.push(dom_ops.component, this.cid, this.binds.length/2);
-    for (var binds=this.binds, i=0; i<binds.length; i += 2) {
-      tpl.push(sym(binds[i])); // name of attribute bound.
-      binds[i+1].encode(tpl);  // bound expression.
-    }
+    tpl.push(dom_ops.component, this.cid);
+    encode_named_nodes(tpl, this.binds);
     encode_inline(tpl, this.contents);
   };
 
@@ -139,9 +144,9 @@ manglr = (function(){
     encode_inline(tpl, this.contents);
   };
 
-  function RepeatNode(expr, bind_as, contents) {
-    this.expr = expr;
+  function RepeatNode(bind_as, expr, contents) {
     this.bind_as = bind_as;
+    this.expr = expr;
     this.contents = contents;
   }
   RepeatNode.prototype.encode = function (tpl) {
@@ -154,12 +159,13 @@ manglr = (function(){
   // ---- Attribute AST Nodes ----
 
   var attr_ops = {
-    literal_text:   0,
-    literal_bool:   1,
-    bound_text:     2,
-    bound_bool:     3,
-    literal_class:  4,
-    bound_class:    5,
+    literal_text:      0,
+    literal_bool:      1,
+    bound_text:        2,
+    bound_bool:        3,
+    literal_class:     4,
+    bound_class:       5,
+    cond_class:        6,
   };
 
   function LiteralText(name, value) {
@@ -205,12 +211,20 @@ manglr = (function(){
     tpl.push(attr_ops.literal_class, sym(this.name));
   };
 
-  function BoundClass(name, expr) {
-    this.name = name;
+  function BoundClass(expr) {
     this.expr = expr;
   }
   BoundClass.prototype.encode = function (tpl) {
-    tpl.push(attr_ops.bound_class, sym(this.name));
+    tpl.push(attr_ops.bound_class);
+    this.expr.encode(tpl);
+  };
+
+  function CondClass(name, expr) {
+    this.name = name;
+    this.expr = expr;
+  }
+  CondClass.prototype.encode = function (tpl) {
+    tpl.push(attr_ops.cond_class, sym(this.name));
     this.expr.encode(tpl);
   };
 
@@ -347,12 +361,12 @@ manglr = (function(){
     this._conds.push(expr);
     // [3, expr, [node]];
   };
-  NodeProxy.prototype.bind_class = function (name, expr) {
+  NodeProxy.prototype.cond_class = function (name, expr) {
     // bind (the presence of) a class name to a boolean expression.
-    if (this._ended) throw new Error("bind_class(name, expr) too late to modify this node");
-    if (typeof(name) !== 'string') throw new Error("bind_class(name, expr) the `name` must be a string");
-    if (!(expr instanceof Expr)) throw new Error("bind_class(name, expr) the `expr` must be an instance of Expr");
-    this._binds.push(new BoundClass(name, expr));
+    if (this._ended) throw new Error("cond_class(name, expr) too late to modify this node");
+    if (typeof(name) !== 'string') throw new Error("cond_class(name, expr) the `name` must be a string");
+    if (!(expr instanceof Expr)) throw new Error("cond_class(name, expr) the `expr` must be an instance of Expr");
+    this._binds.push(new CondClass(name, expr));
   }
   NodeProxy.prototype.bind_style = function (name, expr) {
     // bind (the presence of) a class name to a boolean expression.
@@ -363,9 +377,9 @@ manglr = (function(){
   }
   NodeProxy.prototype.implicit = function (name, path) {
     // look up an implicit argument in the scope of this node.
-    if (this._ended) throw new Error("bind_style(name, expr) too late to modify this node");
-    if (typeof(name) !== 'string') throw new Error("bind_style(name, path) the `name` must be a string");
-    if (typeof(path) !== 'string') throw new Error("bind_style(name, path) the `path` must be a string");
+    if (this._ended) throw new Error("implicit(name, path) too late to modify this node");
+    if (typeof(name) !== 'string') throw new Error("implicit(name, path) the `name` must be a string");
+    if (typeof(path) !== 'string') throw new Error("implicit(name, path) the `path` must be a string");
     // TODO: actually implment it.
     return new ConstText(name+'.'+path);
   }
@@ -402,7 +416,7 @@ manglr = (function(){
 
   prefixes['class-'] = function(node, value, name) {
     console.log("CLASS:", name, value, node);
-    node.bind_class(name, node.expr(value));
+    node.cond_class(name, node.expr(value));
   };
 
   prefixes['style-'] = function(node, value, name) {
@@ -595,13 +609,13 @@ manglr = (function(){
               if (name_lc === 'class') {
                 // TODO: this needs custom parsing!
                 var classes = parse_text_tpl(value);
-                for (var cls of classes) {
-                  if (cls instanceof ConstText) {
+                for (var expr of classes) {
+                  if (expr instanceof ConstText) {
                     // FIXME: also need to split it into words!
-                    binds.push(new LiteralClass(cls.text));
+                    binds.push(new LiteralClass(expr.text));
                   } else {
-                    // FIXME: where does the class name come from?
-                    binds.push(new BoundClass("TODO_name", cls));
+                    // bound class: resolves to the name of a class (or multiple classes)
+                    binds.push(new BoundClass(expr));
                   }
                 }
               } else {

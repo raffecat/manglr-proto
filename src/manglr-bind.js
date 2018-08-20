@@ -263,9 +263,10 @@
       clist['add'](cls);
     } else {
       // check if the class is already present.
-      var classes = elem['className']['split'](' ');
-      for (var i=0; i<classes['length']; i++) {
-        if (classes[i] === cls) return;
+      var classes = elem['className'];
+      var list = classes['split'](' ');
+      for (var i=0; i<list['length']; i++) {
+        if (list[i] === cls) return;
       }
       // cls was not found: add the class.
       elem['className'] = classes + ' ' + cls;
@@ -278,19 +279,43 @@
       // classList is fast and avoids spurious reflows.
       clist['remove'](cls);
     } else {
-      var classes = elem['className']['split'](' '), orig = classes;
-      for (var i=0; i<classes['length']; i++) {
-        if (classes[i] === cls) {
-          classes = classes['replace'](cls,'');
+      var list = elem['className']['split'](' '), dirty = false;
+      for (var i=0; i<list['length']; i++) {
+        if (list[i] === cls) {
+          list['splice'](i--, 1);
+          dirty = true;
         }
       }
       // avoid setting className unless we actually changed it.
-      if (classes !== orig) elem['className'] = classes;
+      if (dirty) elem['className'] = list.join(' ');
     }
   }
 
-  function dep_upd_node_class(dep) {
-    (is_true(dep.value) ? add_class : remove_class)(dep.node, dep.name);
+  function dep_upd_bound_classes(dep) {
+    // bound text expr can contain any number of classes.
+    var val = dep.from.value;
+    var classes = is_text[typeof(val)] ? (''+val) : '';
+    var was = dep.was;
+    if (classes !== was) {
+      dep.was = classes;
+      if (was) {
+        var rm_list = was.split(' ');
+        for (var i=0; i<rm_list.length; i++) {
+          remove_class(dep.node, rm_list[i]);
+        }
+      }
+      if (classes) {
+        var add_list = classes.split(' ');
+        for (var i=0; i<add_list.length; i++) {
+          add_class(dep.node, add_list[i]);
+        }
+      }
+    }
+  }
+
+  function dep_upd_cond_class(dep) {
+    // single class bound to a boolean expression.
+    (is_true(dep.from.value) ? add_class : remove_class)(dep.node, dep.name);
   }
 
   function create_tag(doc, parent, after, scope) {
@@ -355,17 +380,33 @@
           p += 2;
           break;
         case 5:
-          // bound class (toggle)
+          // bound classes (text)
+          p += 1;
+          var dep = resolve_expr(scope);
+          if (debug) console.log("[a] bound class:", dep);
+          if (dep.wait<0) {
+            // constant value.
+            var val = dep.value;
+            var classes = is_text[typeof(val)] ? (''+val) : '';
+            if (classes) cls['push'](classes); // class text.
+          } else {
+            // varying value.
+            var watch = { value:null, wait:0, fwd:[], fn:dep_upd_bound_classes, node:node, from:dep, was:'' }; // dep.
+            dep.fwd['push'](watch);
+          }
+          break;
+        case 6:
+          // conditional class (toggle)
           var name = sym_list[tpl[p+1]];
           p += 2;
           var dep = resolve_expr(scope);
-          if (debug) console.log("[a] bound class:", name, dep);
+          if (debug) console.log("[a] conditional class:", name, dep);
           if (dep.wait<0) {
             // constant value.
             if (is_true(dep.value)) cls['push'](name);
           } else {
             // varying value.
-            var watch = { value:null, wait:0, fwd:[], fn:dep_upd_node_class, node:node, from:dep, name:name }; // dep.
+            var watch = { value:null, wait:0, fwd:[], fn:dep_upd_cond_class, node:node, from:dep, name:name }; // dep.
             dep.fwd['push'](watch);
           }
           break;
@@ -374,7 +415,7 @@
           throw new Error("bad attribute binding op: "+tpl[p]+" at "+p);
       }
     }
-    if (cls['length']) node['className'] += cls.join(' ');
+    if (cls['length']) node['className'] += cls['join'](' ');
     // - htmlFor
     // - style
     insert_after(parent, after, node);
