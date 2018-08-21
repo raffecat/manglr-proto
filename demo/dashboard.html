@@ -22,51 +22,44 @@
 
   <body>
 
-    <nav class="navbar navbar-inverse navbar-fixed-top">
+    <model id="" ></model>
+
+    <nav-bar-top></nav-bar-top>
+    <page-layout></page-layout>
+
+    <component tag="page-layout">
       <div class="container-fluid">
-        <div class="navbar-header">
-          <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#navbar" aria-expanded="false" aria-controls="navbar">
-            <span class="sr-only">Toggle navigation</span>
-            <span class="icon-bar"></span>
-            <span class="icon-bar"></span>
-            <span class="icon-bar"></span>
-          </button>
-          <a class="navbar-brand" href="/">Dashboard</a>
-        </div>
-        <div id="navbar" class="navbar-collapse collapse">
-          <ul class="nav navbar-nav navbar-right">
-            <li><a href="/account">Account</a></li>
-            <li><a href="/logout">Log out</a></li>
-          </ul>
+        <div class="row">
+          <div class="col-sm-3 col-md-2 sidebar">
+            <ul class="nav nav-sidebar">
+              <nav-link name="Sites" url="#!/sites"></nav-link>
+              <nav-link name="Customers" url="#!/customers"></nav-link>
+              <nav-link name="History" url="#!/history"></nav-link>
+            </ul>
+          </div>
+          <div class="col-sm-9 col-sm-offset-3 col-md-10 col-md-offset-2 main">
+            <sites-page if="route:#!/sites"></sites-page>
+            <customers-page if="route:#!/customers"></customers-page>
+            <history-page if="route:#!/history"></history-page>
+          </div>
         </div>
       </div>
-    </nav>
-
-    <component tag="nav-link" in="name url">
-      <li class-active="route:{url}"><a href="{url}">{name} <span class="sr-only" when="route:{url}">(current)</span></a></li>
     </component>
 
-    <div class="container-fluid">
-      <div class="row">
-        <div class="col-sm-3 col-md-2 sidebar">
-          <ul class="nav nav-sidebar">
-            <nav-link name="Sites" url="#!/sites"></nav-link>
-            <nav-link name="Customers" url="#!/customers"></nav-link>
-            <nav-link name="History" url="#!/history"></nav-link>
-          </ul>
-        </div>
-        <div class="col-sm-9 col-sm-offset-3 col-md-10 col-md-offset-2 main">
-          <route path="/sites" template="sites-page"></route>
-          <route path="/customers" template="customers-page"></route>
-          <route path="/history" template="history-page"></route>
-          <sites-page> </sites-page>
-        </div>
-      </div>
-    </div>
+    <component tag="nav-link" in="name url">
+      <li class-active="route:{url}"><a href="{url}">{name} <span if="route:{url}" class="sr-only">(current)</span></a></li>
+    </component>
 
+    <component tag="customers-page">
+      <h1 class="page-header">Customers</h1>
+    </component>
+
+    <component tag="history-page">
+      <h1 class="page-header">History</h1>
+    </component>
 
     <component tag="sites-page">
-      <h1 class="page-header">Dashboard</h1>
+      <h1 class="page-header">Sites</h1>
 
       <component tag="placeholder" in="label">
         <div class="col-xs-6 col-sm-3 placeholder">
@@ -85,6 +78,7 @@
       </div>
 
       <component tag="row" in="label">
+        <!-- in-browser compiler: the browser discards the tr & td elements! -->
         <tr>
           <td>{a}</td>
           <td>{b}</td>
@@ -107,6 +101,7 @@
             </tr>
           </thead>
           <tbody>
+            <!-- in-browser compiler: this element gets punted outside (above) the table element -->
             <row a="1,001" b="Lorem" c="ipsum" d="dolor" e="sit"></row>
             <tr>
               <td>1,001</td>
@@ -118,6 +113,28 @@
           </tbody>
         </table>
       </div>
+    </component>
+
+    <component tag="nav-bar-top" in="">
+      <nav class="navbar navbar-inverse navbar-fixed-top">
+        <div class="container-fluid">
+          <div class="navbar-header">
+            <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#navbar" aria-expanded="false" aria-controls="navbar">
+              <span class="sr-only">Toggle navigation</span>
+              <span class="icon-bar"></span>
+              <span class="icon-bar"></span>
+              <span class="icon-bar"></span>
+            </button>
+            <a class="navbar-brand" href="/">Dashboard</a>
+          </div>
+          <div id="navbar" class="navbar-collapse collapse">
+            <ul class="nav navbar-nav navbar-right">
+              <li><a href="/account">Account</a></li>
+              <li><a href="/logout">Log out</a></li>
+            </ul>
+          </div>
+        </div>
+      </nav>
     </component>
 
     <script src="../src/manglr-compile.js"></script>

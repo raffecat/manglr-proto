@@ -9,6 +9,7 @@ manglr = (function(){
   var nextSid = 1;
   var directives = {}; // registry.
   var prefixes = {};   // registry.
+  var mod_conds = {};  // registry.
   var prefixes_dirty = true;
   var root_component = { id:'c0', cid:0, tags:{}, tpl:[], tag:'$' };
   var components = { c0:root_component }; // index.
@@ -35,6 +36,7 @@ manglr = (function(){
     'component tag name "@" hides another component with the same name',    // 11
     'handler for attribute "@" did not return an [expression]',             // 12
     'class attribute should not be bound to an expression: @',              // 13
+    'no handler registered for modular condition named "@"',                // 14
   ];
 
   var log = console.log;
@@ -72,7 +74,15 @@ manglr = (function(){
     tpl[patch] = tpl.length - patch; // size of inline tpl.
   }
 
-  function encode_named_nodes(tpl, pairs) {
+  function encode_named_nodes(tpl, binds) {
+    // HACK : convert from attr_ops to expr_ops ...
+    var pairs = [];
+    for (var i=0; i<binds.length; i++) {
+      var b = binds[i];
+      if (b instanceof LiteralText) pairs.push(b.name, new ConstText(b.value));
+      if (b instanceof BoundText) pairs.push(b.name, b.expr);
+    }
+    // encode the { name, expr } pairs.
     tpl.push(pairs.length/2);
     for (var i=0; i<pairs.length; i += 2) {
       tpl.push(sym(pairs[i])); // name of the node.
@@ -166,6 +176,7 @@ manglr = (function(){
     literal_class:     4,
     bound_class:       5,
     cond_class:        6,
+    bound_style:       7,
   };
 
   function LiteralText(name, value) {
@@ -177,6 +188,14 @@ manglr = (function(){
     tpl.push(attr_ops.literal_text, sym(this.name), sym(this.value));
   };
 
+  function LiteralBool(name, value) {
+    this.name = name;
+    this.value = value;
+  }
+  LiteralBool.prototype.encode = function (tpl) {
+    tpl.push(attr_ops.literal_bool, sym(this.name), this.value ? 1 : 0);
+  };
+
   function BoundText(name, expr) {
     // Attribute bound to a text expression.
     this.name = name;
@@ -185,14 +204,6 @@ manglr = (function(){
   BoundText.prototype.encode = function (tpl) {
     tpl.push(attr_ops.bound_text, sym(this.name));
     this.expr.encode(tpl);
-  };
-
-  function LiteralBool(name, value) {
-    this.name = name;
-    this.value = value;
-  }
-  LiteralBool.prototype.encode = function (tpl) {
-    tpl.push(attr_ops.literal_bool, sym(this.name), this.value ? 1 : 0);
   };
 
   function BoundBool(name, expr) {
@@ -228,6 +239,15 @@ manglr = (function(){
     this.expr.encode(tpl);
   };
 
+  function BoundStyle(name, expr) {
+    this.name = name;
+    this.expr = expr;
+  }
+  BoundStyle.prototype.encode = function (tpl) {
+    tpl.push(attr_ops.bound_style, sym(this.name));
+    this.expr.encode(tpl);
+  };
+
 
   // ---- Expression AST Nodes ----
 
@@ -246,11 +266,11 @@ manglr = (function(){
   function Expr() {} // base interface for expr_ops.
 
   function ConstText(text) {
-    this.text = text;
+    this.value = text;
   }
   ConstText.prototype = new Expr();
   ConstText.prototype.encode = function (tpl) {
-    tpl.push(expr_ops.const_text, sym(this.text));
+    tpl.push(expr_ops.const_text, sym(this.value));
   };
 
   function ScopeLookup(path) {
@@ -260,7 +280,7 @@ manglr = (function(){
   ScopeLookup.prototype.encode = function (tpl) {
     if (this.path.length < 1) throw new Error("empty path in ScopeLookup node");
     tpl.push(expr_ops.scope_lookup, this.path.length);
-    tpl.push.apply(tpl, this.path.map(sym));
+    Array.prototype.push.apply(tpl, this.path.map(sym));
   };
 
   function ConcatText(args) {
@@ -330,10 +350,12 @@ manglr = (function(){
 
   // ---- API for directives ----
 
-  function NodeProxy(node, binds) {
+  function NodeProxy(node, tpl) {
     this._node = node;
-    this._binds = binds;
+    this._tpl = tpl; // null for HTML tags.
+    this._binds = [];
     this._conds = [];
+    this._children = [];
     this._ended = false;
   }
   NodeProxy.prototype.text = function (src) {
@@ -347,6 +369,32 @@ manglr = (function(){
     if (typeof(src) !== 'string') throw new Error("expr(src) the `src` must be a string");
     return parse_text_tpl_as_expr(src);
   };
+  NodeProxy.prototype.text_tpl = function (text) {
+    // parse an expression in the scope of this node.
+    if (this._ended) throw new Error("text_tpl(text) too late to modify this node");
+    if (typeof(text) !== 'string') throw new Error("text_tpl(text) the `text` must be a string");
+    return parse_text_tpl_as_expr(text);
+  };
+  NodeProxy.prototype.cond_expr = function (src) {
+    // parse a modular condition or boolean expression in the scope of this node.
+    if (this._ended) throw new Error("cond_expr(src) too late to modify this node");
+    if (typeof(src) !== 'string') throw new Error("cond_expr(src) the `src` must be a string");
+    mod_con_re.lastIndex = 0;
+    var mod_con = mod_con_re.exec(src);
+    if (mod_con) {
+      var cond_name = mod_con[1], tail = mod_con[2];
+      var handler = mod_conds[cond_name];
+      if (handler) {
+        return handler(this, tail);
+      } else {
+        error(this._node, 14, cond_name); // debugging: report unknown modular condition.
+        return new ConstText("");
+      }
+    } else {
+      // TODO: validate as a boolean expression.
+      return parse_text_tpl_as_expr(src);
+    }
+  };
   NodeProxy.prototype.equals = function (left, right) {
     // create an operation that compares expressions.
     if (this._ended) throw new Error("equals(left, right) too late to modify this node");
@@ -359,30 +407,75 @@ manglr = (function(){
     if (this._ended) throw new Error("cond(expr) too late to modify this node");
     if (!(expr instanceof Expr)) throw new Error("cond(expr) the `expr` must be an instance of Expr");
     this._conds.push(expr);
-    // [3, expr, [node]];
+  };
+  NodeProxy.prototype.add_class = function (name) {
+    // add a literal class name to the node.
+    if (this._ended) throw new Error("add_class(name) too late to modify this node");
+    if (typeof(name) !== 'string') throw new Error("add_class(name) the `name` must be a string");
+    if (this._tpl) throw new Error("add_class(name) cannot add a class to a custom component tag");
+    var names = name.split(/\s+/g);
+    for (var c=0; c<names.length; c++) {
+      var cls = names[c];
+      if (cls) this._binds.push(new LiteralClass(cls));
+    }
   };
   NodeProxy.prototype.cond_class = function (name, expr) {
     // bind (the presence of) a class name to a boolean expression.
     if (this._ended) throw new Error("cond_class(name, expr) too late to modify this node");
     if (typeof(name) !== 'string') throw new Error("cond_class(name, expr) the `name` must be a string");
     if (!(expr instanceof Expr)) throw new Error("cond_class(name, expr) the `expr` must be an instance of Expr");
+    if (this._tpl) throw new Error("cond_class(name, expr) cannot add a class to a custom component tag");
     this._binds.push(new CondClass(name, expr));
-  }
+  };
   NodeProxy.prototype.bind_style = function (name, expr) {
     // bind (the presence of) a class name to a boolean expression.
     if (this._ended) throw new Error("bind_style(name, expr) too late to modify this node");
     if (typeof(name) !== 'string') throw new Error("bind_style(name, expr) the `name` must be a string");
     if (!(expr instanceof Expr)) throw new Error("bind_style(name, expr) the `expr` must be an instance of Expr");
-    this._binds.push(new BindStyle(name, expr));
-  }
+    if (this._tpl) throw new Error("cond_class(name, expr) cannot add a style to a custom component tag");
+    this._binds.push(new BoundStyle(name, expr));
+  };
+  NodeProxy.prototype.bind_attr = function (name, expr) {
+    // bind an attribute on this node to an expression.
+    if (this._ended) throw new Error("bind_attr(name, expr) too late to modify this node");
+    if (typeof(name) !== 'string') throw new Error("bind_attr(name, expr) the `name` must be a string");
+    if (!(expr instanceof Expr)) throw new Error("bind_attr(name, expr) the `expr` must be an instance of Expr");
+    if (!this._tpl && hasOwn.call(bool_map, name)) {
+      // bind to a boolean property on an HTML DOM element.
+      if (expr instanceof ConstText) {
+        this._binds.push(new LiteralBool(bool_map[name], !!expr.value));
+      } else {
+        this._binds.push(new BoundBool(bool_map[name], expr));
+      }
+    } else {
+      if (expr instanceof ConstText) {
+        this._binds.push(new LiteralText(name, expr.value));
+      } else {
+        this._binds.push(new BoundText(name, expr));
+      }
+    }
+  };
   NodeProxy.prototype.implicit = function (name, path) {
     // look up an implicit argument in the scope of this node.
     if (this._ended) throw new Error("implicit(name, path) too late to modify this node");
     if (typeof(name) !== 'string') throw new Error("implicit(name, path) the `name` must be a string");
     if (typeof(path) !== 'string') throw new Error("implicit(name, path) the `path` must be a string");
-    // TODO: actually implment it.
-    return new ConstText(name+'.'+path);
-  }
+    // TODO: introduce an implicit "in" binding up through enclosing scopes until we reach a template.
+    return new ConstText('((implicit:'+name+'.'+path+'))');
+  };
+  NodeProxy.prototype.add_children = function (children) {
+    Array.prototype.push.apply(this._children, children);
+  };
+
+
+  // ---- modular conditions ----
+
+  mod_conds['route'] = function (node, rest) {
+    console.log("ROUTE COND:", rest, node);
+    var route = node.implicit('@router', 'route');
+    // TODO: need to trim `rest` before matching - text tpl can contain whitespace.
+    return node.equals(route, node.text_tpl(rest));
+  };
 
 
   // ---- directives ----
@@ -391,7 +484,7 @@ manglr = (function(){
     console.log("IF:", value, node);
     // - compile the expression in the scope of `node`
     // - wrap the node in a condition node.
-    node.cond(node.expr(value));
+    node.cond(node.cond_expr(value));
   };
 
   directives['repeat'] = function (node, value) {
@@ -408,7 +501,26 @@ manglr = (function(){
   directives['if-route'] = function (node, value) {
     console.log("IF-ROUTE:", value, node);
     var route = node.implicit('@router', 'route');
-    node.cond(node.equals(route, node.expr(value)));
+    // TODO: need to trim `value` before matching - text tpl can contain whitespace.
+    node.cond(node.equals(route, node.text_tpl(value)));
+  };
+
+  directives['class'] = function (node, value) {
+    // Must special-case "class" to merge with "class-" prefix directives.
+    var classes = parse_text_tpl(value);
+    for (var expr of classes) {
+      if (expr instanceof ConstText) {
+        node.add_class(expr.value);
+      } else {
+        // bound class: resolves to the name of a class (or multiple classes)
+        node._binds.push(new BoundClass(expr));
+      }
+    }
+  };
+
+  directives['style'] = function (node, value) {
+    // Must special-case "style" to merge with "style-" prefix directives.
+    throw new Error("TODO: parse style attribute into bindings");
   };
 
 
@@ -416,7 +528,7 @@ manglr = (function(){
 
   prefixes['class-'] = function(node, value, name) {
     console.log("CLASS:", name, value, node);
-    node.cond_class(name, node.expr(value));
+    node.cond_class(name, node.cond_expr(value));
   };
 
   prefixes['style-'] = function(node, value, name) {
@@ -440,6 +552,7 @@ manglr = (function(){
   }
 
   var tpl_re = new RegExp("([^{]*){?([^}]*)}?", "y");
+  var mod_con_re = new RegExp("\\s*([A-Za-z][-A-Za-z0-9_]*):\\s*(.*)", "y"); // "cond-name: (expr)"
   var expr_re = new RegExp("\\s*(?:([A-Za-z][A-Za-z0-9_.]*)|(\\+|\\-|\\*|\\/)|(.))", "y"); // (?:\\.\\w[\\w\\d_]*)*
   var norm_re = new RegExp("\\s+", "g")
 
@@ -463,7 +576,7 @@ manglr = (function(){
     var i = 0;
     for (;;) {
       var match = expr_re.exec(text);
-      log("match:", match);
+      // log("match:", match);
       if (!match) break; // end of input.
       var path = match[1];
       var dyadic = match[2];
@@ -545,106 +658,49 @@ manglr = (function(){
     if (nodeType == 1) { // Element.
       var tag = node.nodeName.toLowerCase();
       if (tag === 'component' || tag === 'script') return; // elide from tpl.
+      var tag_tpl = c_tags[tag];
+      var proxy = new NodeProxy(node, tag_tpl);
       var attrs = node.attributes;
-      var children = parse_children(node, c_tags);
-      var comp = c_tags[tag]; // is it a component instance? (changes attribute encoding)
-      if (comp) {
-        // instance of a component.
-        var binds = [];
-        for (var i=0,n=attrs&&attrs.length; i<n; i++) {
-          var attr = attrs[i];
-          if (attr.specified) {
-            var name = attr.name;
-            var value = attr.value;
-            // TODO: if directives cannot be applied to components,
-            // how can they be used with `if` and `repeat` and `if-route` ?!
-            if (~value.indexOf('{')) {
-              // TODO: parse as LiteralText, BoundText (if concat) or BoundExpr otherwise?
-              var bound = parse_text_tpl_as_expr(value);
-              binds.push(name, bound);
-              console.log("component bound", name, bound);
+      for (var i=0,n=attrs&&attrs.length; i<n; i++) {
+        var attr = attrs[i];
+        if (attr.specified) {
+          var name = attr.name;
+          var name_lc = name.toLowerCase();
+          var value = attr.value;
+          // check if the attribute name matches any registered directives.
+          var handler = directives[name_lc];
+          if (handler) {
+              handler(proxy, value, "");
+              continue; // next attribute.
+          }
+          // check if the attribute matches any registered prefix.
+          if (~name_lc.indexOf('-')) {
+            var m = name_lc.match(prefix_re);
+            if (m) {
+              var prefix = m[0];
+              var suffix = name.substr(prefix.length);
+              // custom binding handler.
+              var handler = prefixes[prefix];
+              handler(proxy, value, suffix);
+              continue; // next attribute.
             } else {
-              binds.push(name, new ConstText(value));
+              // warn if the attribute is not a standard HTML attribute.
+              // TODO: use a database of standard HTML tags and their attributes.
+              if (!tag_tpl && !std_attr.test(name_lc)) error(node, 1, name);
             }
           }
+          // bind the attribute to the (text-template) expression.
+          proxy.bind_attr(name, proxy.expr(value));
         }
-        to_list.push(new DomComponent(comp.tag, comp.cid, binds, children));
+      }
+      var children = parse_children(node, c_tags);
+      proxy.add_children(children);
+      if (tag_tpl) {
+        to_list.push(new DomComponent(tag_tpl.tag, tag_tpl.cid, proxy._binds, proxy._children));
       } else {
         // HTML element.
         if (~tag.indexOf('-')) error(node, 3, tag); // debugging: report custom tag names if not a component.
-        var binds = [];
-        var proxy = null;
-        for (var i=0,n=attrs&&attrs.length; i<n; i++) {
-          var attr = attrs[i];
-          if (attr.specified) {
-            var name = attr.name;
-            var name_lc = name.toLowerCase();
-            var value = attr.value;
-            // check if the attribute name matches any registered handler.
-            var handler = directives[name_lc];
-            if (handler) {
-                if (!proxy) proxy = new NodeProxy(node, binds);
-                handler(proxy, value, "");
-                continue;
-            }
-            // check if the attribute matches any registered prefix.
-            if (~name_lc.indexOf('-')) {
-              var m = name_lc.match(prefix_re);
-              if (m) {
-                var prefix = m[0];
-                var suffix = name.substr(prefix.length);
-                // custom binding handler.
-                var handler = prefixes[prefix];
-                if (!proxy) proxy = new NodeProxy(node, binds);
-                handler(proxy, value, suffix);
-                continue;
-              } else {
-                // warn if the attribute is not a standard HTML attribute.
-                if (!std_attr.test(name_lc)) error(node, 1, name);
-              }
-            }
-            // TODO: also need to handle `if` and `repeat` here - wraps this node!
-            // TODO: `route` custom-tag will wrap its contents in an `if` node.
-            if (~value.indexOf('{')) {
-              if (name_lc === 'class') {
-                // TODO: this needs custom parsing!
-                var classes = parse_text_tpl(value);
-                for (var expr of classes) {
-                  if (expr instanceof ConstText) {
-                    // FIXME: also need to split it into words!
-                    binds.push(new LiteralClass(expr.text));
-                  } else {
-                    // bound class: resolves to the name of a class (or multiple classes)
-                    binds.push(new BoundClass(expr));
-                  }
-                }
-              } else {
-                const expr = parse_text_tpl_as_expr(value);
-                if (hasOwn.call(bool_map, name)) {
-                  binds.push(new BoundBool(bool_map[name], expr));
-                } else {
-                  binds.push(new BoundText(name, expr));
-                  console.log("tag bound attrib", name, expr);
-                }
-              }
-            } else {
-              // plain attribute value.
-              if (name_lc === 'class') {
-                // special case: each class must be handled individually.
-                var names = value.split(/\s+/g);
-                for (var c=0; c<names.length; c++) {
-                  binds.push(new LiteralClass(names[c]));
-                }
-              } else if (hasOwn.call(bool_map, name)) {
-                // map the name to the correct property case.
-                binds.push(new LiteralBool(bool_map[name], true));
-              } else {
-                binds.push(new LiteralText(name, value));
-              }
-            }
-          }
-        }
-        to_list.push(new DomTag(tag, binds, children));
+        to_list.push(new DomTag(tag, proxy._binds, proxy._children));
       }
     } else if (nodeType == 3) { // Text.
       // node.data: CharacterData, DOM level 1.
@@ -652,7 +708,7 @@ manglr = (function(){
       for (var node of nodes) {
         if (node instanceof ConstText) {
           // re-wrap the text in a literal dom text node.
-          to_list.push(new DomText(node.text));
+          to_list.push(new DomText(node.value));
         } else {
           // wrap the expr in a bound dom text node.
           to_list.push(new DomBoundText(node));

@@ -9,13 +9,18 @@
   var sym_list; // Array: symbol strings.
   var tpl; // Array: encoded templates.
   var p = 0; // read position in tpl being spawned.
+  var scheduled = false;
+  var dirty_roots = [];
+  var in_transaction = null;
+  var dep_n = 1;
 
-  // ---- scopes and deps ----
+
+  // -+-+-+-+-+-+-+-+-+ Scopes -+-+-+-+-+-+-+-+-+
 
   function Scope(up, contents) {
     // a binding context for names lexically in scope.
     // find bound names in `b` or follow the `up` scope-chain.
-    var s = { id:'s'+(nextSid++), binds:{}, up:up, contents:contents, dom:[], watch:[], inner:[] };
+    var s = { id:'s'+(nextSid++), binds:{}, up:up, contents:contents, dom:[], inner:[] };
     if (up) up.inner['push'](s); // register to be destroyed with enclosing scope.
     return s;
   }
@@ -63,22 +68,241 @@
     return null_dep;
   }
 
-  // scopes always hold deps - slot or computed bound to a name.
-  // deps can be const (wait<0) - such deps will never update.
-  // models also always hold deps - can create on demand?
+  // Scope names are always bound to a Model, Collection or Dep (Expr/Slot/Const)
+  // A name in a scope cannot be re-bound, and names cannot be added.
+  // Therefore scopes can be vectorised.
 
-  // have const deps because we create [recursive] components at run-time,
-  // also `repeat` over data that will never change (for the life of the repeat)
+  // Fields in a Model are pre-defined. If nothing observes a field, it need not exist.
+  // However, any Model can be passed in to any template at run-time (unless typed)
+  // Therefore the used fields cannot be pre-determined.
+  // When data is loaded into a model (or changes applied) -> update the deps.
+
+
+  // -+-+-+-+-+-+-+-+-+ Dependency Updates -+-+-+-+-+-+-+-+-+
+
+  function recursive_inc(dep) {
+    if (!dep.n) dep.n = dep_n; // DEBUG.
+    var wait = dep.wait++;
+    console.log("... dep #"+dep.n+" is now waiting for "+wait);
+    if (wait === 0) {
+      // The dep was in ready state, and is now in dirty state.
+      // Each downstream dep is now waiting for another upstream dep.
+      var fwd = dep.fwd;
+      for (var i=0; i<fwd.length; i++) {
+        recursive_inc(fwd[i]);
+      }
+    }
+  }
+
+  function recursive_dec(dep) {
+    var wait = --dep.wait;
+    console.log("... dep #"+dep.n+" is now waiting for "+wait);
+    if (wait === 0) {
+      // the dep is now ready to update.
+      console.log("... dep #"+dep.n+" is now ready (updating value)");
+      // update the "value" on the dep (optional)
+      var fn = dep.fn; if (fn) fn();
+      // Each downstream dep is now waiting for one less upstream dep.
+      var fwd = dep.fwd;
+      for (var i=0; i<fwd.length; i++) {
+        recursive_dec(fwd[i]);
+      }
+    }
+  }
+
+  function update_all_dirty() {
+    // Run an update transaction (mark and sweep pass over dirty deps)
+    // Any deps marked dirty dring processing will be queued for another transaction.
+    var roots = dirty_roots;
+    console.log("[d] update all deps: "+roots.length);
+    if (roots.length) {
+      dirty_roots = []; // reset to capture dirty deps for next transaction.
+      // Increment wait counts on dirty deps and their downstream deps.
+      // Mark the root deps clean so they will be queued if they become dirty again.
+      for (var n=0; n<roots.length; n++) {
+        var dep = roots[n];
+        dep.dirty = false; // mark clean (before any updates happen)
+        recursive_inc(roots[n]);
+      }
+      // At this point all deps are clean and can be made dirty again during update.
+      // Decrement wait counts on deps and run their update when ready.
+      // NB. roots.length can change due to fix-ups - DO NOT CACHE LENGTH.
+      in_transaction = roots; // expose for fix-ups.
+      for (var n=0; n<roots.length; n++) {
+        // Each root dep is now waiting for one less upstream (scheduled update is "ready")
+        console.log("... updating root dep #"+roots[n].n+" (scheduled)");
+        recursive_dec(roots[n]);
+      }
+      in_transaction = null;
+    }
+    // Re-schedule if there are any dirty deps, otherwise go idle.
+    if (dirty_roots.length) setTimeout(update_all_dirty, 10);
+    else scheduled = false;
+  }
+
+  function mark_dirty(dep) {
+    // Queue the dep for the next update transaction.
+    // NB. cannot modify the "wait" count because this might happen during an update transaction!
+    // Therefore instead we mark root (provoking) deps "dirty" and queue them.
+    if (dep.dirty) return; // early out: already dirty.
+    if (dep.wait < 0) return; // do not mark const deps dirty (would corrupt its "wait")
+    dep.dirty = true;
+    dirty_roots.push(dep);
+    if (!scheduled) {
+      scheduled = true;
+      console.log("[d] scheduled an update");
+      setTimeout(update_all_dirty, 0);
+    }
+  }
+
+  function subscribe_dep(src_dep, sub_dep) {
+    // Make sub_dep depend on src_dep.
+    // This can be used within an update transaction and on deps that are alredy connected
+    // to other deps and waiting for updates, so it needs to handle lots of edge-cases.
+    if (sub_dep.wait < 0) return; // cannot subscribe a const dep (would corrupt its "wait")
+    var fwd = src_dep.fwd, len = fwd.length;
+    for (var i=0; i<len; i++) {
+      if (fwd[i] === sub_dep) return; // already present (would corrupt "wait" by decr. twice)
+    }
+    fwd[len] = sub_dep; // append.
+    // If src_dep is currently waiting (i.e. has told downstream deps to expect an update)
+    // then sub_dep will receive a recursive_dec() as part of the currently running transaction.
+    if (src_dep.wait > 0) {
+      recursive_inc(sub_dep);
+    } else {
+      // We need to ensure that sub_dep will get updated at some point, since it has upstream
+      // deps and presumably wants to derive something from them. Add it to the running
+      // transaction or mark it dirty if not inside a transaction.
+      if (in_transaction) {
+        // Avoid extra work if the dep is already waiting on another dep (i.e. will update)
+        if (!sub_dep.wait) {
+          // Mark sub_dep as waiting - now expecting an update (from the queue)
+          recursive_inc(sub_dep);
+          in_transaction[in_transaction.length] = sub_dep;
+        }
+      } else {
+        mark_dirty(sub_dep);
+      }
+    }
+  }
+
+  function unsubscribe_dep(src_dep, sub_dep) {
+    // Make sub_dep stop depending on src_dep.
+    // This can be used within an update transaction and on deps that are alredy connected
+    // to other deps and waiting for updates, so it needs to handle lots of edge-cases.
+    var fwd = src_dep.fwd, last = fwd.length - 1;
+    for (var i=0; i<=last; i++) {
+      if (fwd[i] === sub_dep) {
+        // Remove sub_dep from the array by moving the last element down.
+        fwd[i] = fwd[last]; // spurious if i === last.
+        fwd.length = last; // discard the last element.
+        // If src_dep is currently waiting (i.e. has told downstream deps to expect an update)
+        // then we must decrement the wait count in sub_dep because it won't receive that update.
+        // else-case: sub_dep is not waiting for a recursive_dec() from this src_dep.
+        if (src_dep.wait > 0) {
+          // However, if the wait count drops to zero, we only want to update it if it is still
+          // active (i.e. depends on other deps, which we can't tell from wait-count alone) and
+          // we want to do so from update_all_dirty(), not from inside a call to unsubscribe_dep()
+          // Assert: sub_dep.wait must be > 0 here because src_dep.wait was.
+          // else-case: sub_dep.wait remains > 0 so it will still be updated later.
+          if (sub_dep.wait > 0 && --sub_dep.wait === 0) {
+            // NB. sub_dep might still be connected to other deps and intended to update as
+            // part of the current transaction, but we just happened to remove the only upstream
+            // dep that hadn't delivered its recursive_dec() yet. If that is the case, put
+            // back one wait count (for the queue) and append the dep to the transaction queue.
+            // Assert: must be inside a transaction here because src_dep.wait was > 0.
+            // TODO: don't do this if sub_dep is now inactive (has no upstream deps)
+            // else-case: something is broken, because waits cannot be > 0 outside a transaction.
+            if (in_transaction) {
+              sub_dep.wait = 1;
+              in_transaction[in_transaction.length] = sub_dep;
+            }
+          }
+        }
+        return; // exit the search loop.
+      }
+    }
+  }
+
+
+  // -+-+-+-+-+-+-+-+-+ Models -+-+-+-+-+-+-+-+-+
+
+  // Note that models work this way because I say so.
+  // So, in what way should they work?!
+  // Why should models be shareable objects kept alive by refs?
+  // Can you pass a whole model (ref) into a template? If so why so?
+
+  function Model(id) {
+    this._id = id;
+    this._deps = {};
+  }
+  Model.prototype.get = function(key) {
+    // Get the dep for a field of the model.
+    // Creates field-deps on demand the first time they are fetched.
+    var deps = this._deps;
+    if (hasOwn['call'](deps, key)) {
+      return deps[key];
+    } else {
+      var dep = { value:null, wait:0, fwd:[], dirty:false, name:key }; // dep.
+      deps[key] = dep;
+      return dep;
+    }
+  };
+  Model.prototype.load = function(data) {
+    // Update the in-memory model and schedule its field deps for update.
+    var deps = this._deps;
+    for (var key in data) {
+      if (hasOwn['call'](data, key)) {
+        var dep = deps[key];
+        if (dep instanceof Model) {
+          // Model or Collection in Model field.
+          // FIXME: cannot happen, because every Model field is a slot-dep (as created below)
+          // that can hold a Model or raw data as its value.
+          // FIXME: problem with the design: load() is meant to load structured data
+          // into nested Models and Collections of Models; this means load() must find
+          // and traverse those things - can they be values in field deps?
+          // if not, how can you capture a ref to a Model in some Collection?
+          dep.load(data[key]);
+        } else if (dep) {
+          // Existing dep - update its value and mark dirty.
+          dep.value = data[key];
+          mark_dirty(dep);
+        } else {
+          // New root dep - create in ready state with the new value.
+          // No need to mark it dirty because there are no listeners yet,
+          // and new listeners will mark themselves dirty.
+          dep = { value:data[key], wait:0, fwd:[], dirty:false, name:key }; // dep.
+          deps[key] = dep;
+        }
+      }
+    }
+  };
+  Model.prototype.update = function(data) {
+    // Apply changes to the in-memory model and queue changes for saving.
+    this.load(data);
+    // TODO: queue the model to save changes to its stores if any.
+  };
 
   function dep_upd_field(dep) {
-    var model = dep.from.value;
-    // TODO: if model is actually a model, its fields will be deps.
-    // TODO: -> need to make this dep follow that dep and take its value here.
-    // TODO: -> need to stop following the old dep if the dep has changed.
+    var new_val = dep.from.value, was = dep.was;
+    if (new_val !== was) {
+      // Model or Immutable Data has changed (or swapping between these)
+      if (was instanceof Model) {
+        // Must remove our watcher dep from the old model field.
+      }
+    }
+    if (dep instanceof Model) {
+      // Get a dep from the model that represents the field.
+      dep = dep.get(name);
+    } else {
+    }
+
     dep.value = (model != null) ? model[dep.name] : null;
   }
 
   function resolve_in_scope(scope) {
+    // This operation combines scope lookup and one or more dependent field lookups.
+    // TODO: Consider splitting these up into separate expression ops.
     var len = tpl[p]; p += 1;
     if (debug) console.log("[e] resolve in scope: len "+len);
     if (len < 1) return null_dep; // TODO: eliminate.
@@ -86,21 +310,27 @@
     var dep = name_from_scope(scope, sym_list[tpl[p]]);
     for (var i=1; i<len; i++) {
       var name = sym_list[tpl[p+i]];
-      if (dep.wait<0) {
-        // constant value.
-        // inline version of dep_upd_field.
-        var model = dep.value;
-        var val = (model != null) ? model[name] : null;
-        // make a const dep with the field value.
-        // TODO: if model is actually a model, its fields will be deps.
-        // TODO: -> can just use that dep directly.
-        dep = { value:val, wait:-1 }; // dep.
-      } else {
-        // varying value.
-        var watch = { value:null, wait:0, fwd:[], fn:dep_upd_field, from:dep, name:name }; // dep.
-        dep.fwd['push'](watch);
-        dep = watch;
+      if (i === 1) {
+        if (dep instanceof Model) {
+          // Get a dep from the model that we obtained from the scope.
+          // Scope cannot be changed, so the field will always come from the same model.
+          dep = dep.get(name);
+          continue;
+        } else if (dep.wait<0) {
+          // Constant dep from the scope (typically an argument to a component)
+          // Make a const dep from the field of the raw scope value.
+          var model = dep.value;
+          var val = (model != null) ? model[name] : null;
+          dep = { value:val, wait:-1 }; // dep.
+          continue;
+        }
       }
+      // Varying dep: field of a Model or field of structured data.
+      // Make a raw field dep that retrieves the value when the upstream changes.
+      // FIXME: can the field BECOME a model later?
+      var watch = { value:null, wait:0, fwd:[], fn:dep_upd_field, from:dep, name:name, was:null }; // dep.
+      dep.fwd['push'](watch);
+      dep = watch;
     }
     p += len;
     return dep;
@@ -442,7 +672,7 @@
     }
     // pass through `parent` and `after` so the component tpl will be created inline,
     // as if the component were replaced with its contents.
-    // FIXME: means every component instance will have [2, 0] at the end for empty contents.
+    // TODO: means every component instance will have [2, 0] at the end for empty contents.
     if (debug) console.log("inline contents: size "+tpl[p]+" length "+tpl[p+1]);
     var size_of_tpl = tpl[p];
     com_scope.contents = p + 1; // inline `contents` tpl is at p + 1.
@@ -576,7 +806,7 @@
     return rep_scope;
   }
 
-  var create = [
+  var dom_create = [
     create_text,       // 0
     create_bound_text, // 1
     create_tag,        // 2
@@ -591,7 +821,7 @@
     var len = tpl[p++];
     for (var i=0; i<len; i++) {
       var op = tpl[p++];
-      var next = create[op](doc, parent, after, scope);
+      var next = dom_create[op](doc, parent, after, scope);
       next.bk = after; // backwards link for finding previous DOM nodes.
       if (capture) capture['push'](next); // capture top-level nodes in a scope.
       after = next;
