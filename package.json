@@ -1,0 +1,36 @@
+{
+  "name": "manglr",
+  "version": "1.0.0",
+  "description": "Manglr web compiler",
+  "bin": {
+    "manglr": "bin/manglr.js"
+  },
+  "scripts": {
+    "test": "mocha"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raffecat/manglr-proto.git"
+  },
+  "keywords": [
+    "manglr",
+    "web",
+    "compiler",
+    "html",
+    "binding",
+    "component",
+    "declarative",
+    "reactive",
+    "react",
+    "dom",
+    "postcss",
+    "vue",
+    "webpack"
+  ],
+  "author": "Andrew Towers <atowers@gmail.com>",
+  "license": "BSD-2-Clause",
+  "bugs": {
+    "url": "https://github.com/raffecat/manglr-proto/issues"
+  },
+  "homepage": "https://github.com/raffecat/manglr-proto#readme"
+}

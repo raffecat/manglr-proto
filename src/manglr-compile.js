@@ -355,6 +355,7 @@ manglr = (function(){
     this._tpl = tpl; // null for HTML tags.
     this._binds = [];
     this._conds = [];
+    this._repeats = [];
     this._children = [];
     this._ended = false;
   }
@@ -407,6 +408,13 @@ manglr = (function(){
     if (this._ended) throw new Error("cond(expr) too late to modify this node");
     if (!(expr instanceof Expr)) throw new Error("cond(expr) the `expr` must be an instance of Expr");
     this._conds.push(expr);
+  };
+  NodeProxy.prototype.repeat = function(expr, name) {
+    // repeat this node (i.e. wrap it in a repeating element)
+    if (this._ended) throw new Error("repeat(expr, name) too late to modify this node");
+    if (!(expr instanceof Expr)) throw new Error("repeat(expr, name) the `expr` must be an instance of Expr");
+    if (typeof(name) !== 'string') throw new Error("repeat(expr, name) the `name` must be a string");
+    this._repeats.push(expr, name);
   };
   NodeProxy.prototype.add_class = function (name) {
     // add a literal class name to the node.
@@ -491,10 +499,10 @@ manglr = (function(){
     console.log("REPEAT:", value, node);
     // - compile the expression in the scope of the inner nodes [repeat creates its own scopes]
     // - wrap the inner nodes in a condition node.
-    var args = value.split(' as ');
+    var args = value.split(' from ');
     if (args.length !== 2) throw new Error('incorrect syntax - must be repeat="{expr} as name"');
-    var expr = args[0];
-    var name = args[1];
+    var name = args[0];
+    var expr = args[1];
     node.repeat(node.expr(expr), name);
   };
 

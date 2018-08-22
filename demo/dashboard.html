@@ -22,8 +22,6 @@
 
   <body>
 
-    <model id="" ></model>
-
     <nav-bar-top></nav-bar-top>
     <page-layout></page-layout>
 
@@ -32,14 +30,14 @@
         <div class="row">
           <div class="col-sm-3 col-md-2 sidebar">
             <ul class="nav nav-sidebar">
-              <nav-link name="Sites" url="#!/sites"></nav-link>
-              <nav-link name="Customers" url="#!/customers"></nav-link>
+              <nav-link name="Orders" url="#!/orders"></nav-link>
+              <nav-link name="Summary" url="#!/summary"></nav-link>
               <nav-link name="History" url="#!/history"></nav-link>
             </ul>
           </div>
-          <div class="col-sm-9 col-sm-offset-3 col-md-10 col-md-offset-2 main">
-            <sites-page if="route:#!/sites"></sites-page>
-            <customers-page if="route:#!/customers"></customers-page>
+          <div class="col-xs-12 col-sm-9 col-sm-offset-3 col-md-10 col-md-offset-2 main">
+            <orders-page if="route:#!/orders"></orders-page>
+            <summary-page if="route:#!/summary"></summary-page>
             <history-page if="route:#!/history"></history-page>
           </div>
         </div>
@@ -50,16 +48,32 @@
       <li class-active="route:{url}"><a href="{url}">{name} <span if="route:{url}" class="sr-only">(current)</span></a></li>
     </component>
 
-    <component tag="customers-page">
-      <h1 class="page-header">Customers</h1>
+    <component tag="orders-page">
+      <collection id="orders" get="/api/orders" auth="@login" poll="30s" cache="30s" save="patch"></collection>
+
+      <div class="row">
+        <div class="orders-leftcol">
+          Left Col
+          <div repeat="order from orders" class="order" class-test-order="not order.is_live" menu-option="order-menu with order">
+            <div class="ol-number">{ order.number }</div>
+            <div class="ol-name">{ order.name }</div>
+            <div class="ol-due">{ order.due_at }</div>
+          </div>
+        </div>
+
+        <div class="orders-rightcol">
+          Right Col
+          <div menu-display="order-menu as order" class="order-detail" class-test-order="not order.is_live">
+            <div class="od-number">{ order.number }</div>
+            <div class="od-name">{ order.name }</div>
+            <div class="od-due">{ order.due_at }</div>
+          </div>
+        </div>
+      </div>
     </component>
 
-    <component tag="history-page">
-      <h1 class="page-header">History</h1>
-    </component>
-
-    <component tag="sites-page">
-      <h1 class="page-header">Sites</h1>
+    <component tag="summary-page">
+      <h1 class="page-header hide">Summary</h1>
 
       <component tag="placeholder" in="label">
         <div class="col-xs-6 col-sm-3 placeholder">
@@ -70,7 +84,7 @@
         </div>
       </component>
 
-      <div class="row placeholders">
+      <div class="row placeholders hide">
         <placeholder label="Label" desc="Something one" alt="Generic placeholder thumbnail"></placeholder>
         <placeholder label="Label" desc="Something two" alt="Generic placeholder thumbnail"></placeholder>
         <placeholder label="Label" desc="Something three" alt="Generic placeholder thumbnail"></placeholder>
@@ -88,8 +102,8 @@
         </tr>
       </component>
 
-      <h2 class="sub-header">Section title</h2>
-      <div class="table-responsive">
+      <h2 class="sub-header hide">Section title</h2>
+      <div class="table-responsive hide">
         <table class="table table-striped">
           <thead>
             <tr>
@@ -115,6 +129,10 @@
       </div>
     </component>
 
+    <component tag="history-page">
+      <h1 class="page-header hide">History</h1>
+    </component>
+
     <component tag="nav-bar-top" in="">
       <nav class="navbar navbar-inverse navbar-fixed-top">
         <div class="container-fluid">
@@ -136,6 +154,24 @@
         </div>
       </nav>
     </component>
+
+    <authentication id="@login" mode="bearer" api="/api/login" enc="json" ret="token" error="error">
+      <div class="overlay hide">
+        <form class="form-signin" submit-to="@login">
+          <h2 class="form-signin-heading">Please sign in</h2>
+          <label for="inputEmail" class="sr-only">Email address</label>
+          <input type="email" id="inputEmail" class="form-control" placeholder="Email address" required autofocus name="email">
+          <label for="inputPassword" class="sr-only">Password</label>
+          <input type="password" id="inputPassword" class="form-control" placeholder="Password" required name="password">
+          <div class="checkbox">
+            <label>
+              <input type="checkbox" value="remember-me"> Remember me
+            </label>
+          </div>
+          <button class="btn btn-lg btn-primary btn-block" type="submit">Sign in</button>
+        </form>
+      </div>
+    </authentication>
 
     <script src="../src/manglr-compile.js"></script>
     <script src="../src/manglr-bind.js"></script>
