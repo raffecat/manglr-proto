@@ -58,6 +58,7 @@
     do {
       var binds = scope.binds;
       if (hasOwn['call'](binds, name)) {
+        console.log("name_from_scope: "+name+" -> ", binds[name]);
         return binds[name];
       }
       scope = scope.up;
@@ -81,30 +82,30 @@
   // -+-+-+-+-+-+-+-+-+ Dependency Updates -+-+-+-+-+-+-+-+-+
 
   function recursive_inc(dep) {
-    if (!dep.n) dep.n = dep_n; // DEBUG.
-    var wait = dep.wait++;
-    console.log("... dep #"+dep.n+" is now waiting for "+wait);
-    if (wait === 0) {
+    if (!dep.n) dep.n = dep_n++; // DEBUG.
+    var old_wait = dep.wait++;
+    console.log("... dep #"+dep.n+" is now waiting for "+dep.wait);
+    if (old_wait === 0) {
       // The dep was in ready state, and is now in dirty state.
       // Each downstream dep is now waiting for another upstream dep.
       var fwd = dep.fwd;
-      for (var i=0; i<fwd.length; i++) {
+      for (var i=0; i<fwd['length']; i++) {
         recursive_inc(fwd[i]);
       }
     }
   }
 
   function recursive_dec(dep) {
-    var wait = --dep.wait;
-    console.log("... dep #"+dep.n+" is now waiting for "+wait);
-    if (wait === 0) {
+    var new_wait = --dep.wait;
+    console.log("... dep #"+dep.n+" is now waiting for "+new_wait);
+    if (new_wait === 0) {
       // the dep is now ready to update.
-      console.log("... dep #"+dep.n+" is now ready (updating value)");
+      console.log("... dep #"+dep.n+" is now ready (firing update)");
       // update the "value" on the dep (optional)
-      var fn = dep.fn; if (fn) fn();
+      var fn = dep.fn; if (fn) fn(dep);
       // Each downstream dep is now waiting for one less upstream dep.
       var fwd = dep.fwd;
-      for (var i=0; i<fwd.length; i++) {
+      for (var i=0; i<fwd['length']; i++) {
         recursive_dec(fwd[i]);
       }
     }
@@ -114,12 +115,12 @@
     // Run an update transaction (mark and sweep pass over dirty deps)
     // Any deps marked dirty dring processing will be queued for another transaction.
     var roots = dirty_roots;
-    console.log("[d] update all deps: "+roots.length);
-    if (roots.length) {
+    console.log("[d] update all deps: "+roots['length']);
+    if (roots['length']) {
       dirty_roots = []; // reset to capture dirty deps for next transaction.
       // Increment wait counts on dirty deps and their downstream deps.
       // Mark the root deps clean so they will be queued if they become dirty again.
-      for (var n=0; n<roots.length; n++) {
+      for (var n=0; n<roots['length']; n++) {
         var dep = roots[n];
         dep.dirty = false; // mark clean (before any updates happen)
         recursive_inc(roots[n]);
@@ -128,15 +129,15 @@
       // Decrement wait counts on deps and run their update when ready.
       // NB. roots.length can change due to fix-ups - DO NOT CACHE LENGTH.
       in_transaction = roots; // expose for fix-ups.
-      for (var n=0; n<roots.length; n++) {
+      for (var n=0; n<roots['length']; n++) {
         // Each root dep is now waiting for one less upstream (scheduled update is "ready")
-        console.log("... updating root dep #"+roots[n].n+" (scheduled)");
+        console.log("... queue decr for dep #"+roots[n].n);
         recursive_dec(roots[n]);
       }
       in_transaction = null;
     }
     // Re-schedule if there are any dirty deps, otherwise go idle.
-    if (dirty_roots.length) setTimeout(update_all_dirty, 10);
+    if (dirty_roots['length']) setTimeout(update_all_dirty, 10);
     else scheduled = false;
   }
 
@@ -147,7 +148,7 @@
     if (dep.dirty) return; // early out: already dirty.
     if (dep.wait < 0) return; // do not mark const deps dirty (would corrupt its "wait")
     dep.dirty = true;
-    dirty_roots.push(dep);
+    dirty_roots['push'](dep);
     if (!scheduled) {
       scheduled = true;
       console.log("[d] scheduled an update");
@@ -160,7 +161,7 @@
     // This can be used within an update transaction and on deps that are alredy connected
     // to other deps and waiting for updates, so it needs to handle lots of edge-cases.
     if (sub_dep.wait < 0) return; // cannot subscribe a const dep (would corrupt its "wait")
-    var fwd = src_dep.fwd, len = fwd.length;
+    var fwd = src_dep.fwd, len = fwd['length'];
     for (var i=0; i<len; i++) {
       if (fwd[i] === sub_dep) return; // already present (would corrupt "wait" by decr. twice)
     }
@@ -178,7 +179,7 @@
         if (!sub_dep.wait) {
           // Mark sub_dep as waiting - now expecting an update (from the queue)
           recursive_inc(sub_dep);
-          in_transaction[in_transaction.length] = sub_dep;
+          in_transaction[in_transaction['length']] = sub_dep;
         }
       } else {
         mark_dirty(sub_dep);
@@ -190,12 +191,12 @@
     // Make sub_dep stop depending on src_dep.
     // This can be used within an update transaction and on deps that are alredy connected
     // to other deps and waiting for updates, so it needs to handle lots of edge-cases.
-    var fwd = src_dep.fwd, last = fwd.length - 1;
+    var fwd = src_dep.fwd, last = fwd['length'] - 1;
     for (var i=0; i<=last; i++) {
       if (fwd[i] === sub_dep) {
         // Remove sub_dep from the array by moving the last element down.
         fwd[i] = fwd[last]; // spurious if i === last.
-        fwd.length = last; // discard the last element.
+        fwd['length'] = last; // discard the last element.
         // If src_dep is currently waiting (i.e. has told downstream deps to expect an update)
         // then we must decrement the wait count in sub_dep because it won't receive that update.
         // else-case: sub_dep is not waiting for a recursive_dec() from this src_dep.
@@ -215,7 +216,7 @@
             // else-case: something is broken, because waits cannot be > 0 outside a transaction.
             if (in_transaction) {
               sub_dep.wait = 1;
-              in_transaction[in_transaction.length] = sub_dep;
+              in_transaction[in_transaction['length']] = sub_dep;
             }
           }
         }
@@ -283,21 +284,32 @@
     // TODO: queue the model to save changes to its stores if any.
   };
 
-  function dep_upd_field(dep) {
-    var new_val = dep.from.value, was = dep.was;
-    if (new_val !== was) {
-      // Model or Immutable Data has changed (or swapping between these)
-      if (was instanceof Model) {
-        // Must remove our watcher dep from the old model field.
-      }
-    }
-    if (dep instanceof Model) {
-      // Get a dep from the model that represents the field.
-      dep = dep.get(name);
-    } else {
-    }
+  function dep_upd_copy_value(dep) {
+    // Copy the value from another dep into this dep.
+    dep.value = dep.from.value;
+  }
 
-    dep.value = (model != null) ? model[dep.name] : null;
+  function dep_upd_field(dep) {
+    var new_val = dep.from.value, was = dep.was, copier = dep.copier;
+    if (new_val !== was) {
+      // Model or immutable data has changed (or swapping between these)
+      if (copier && copier.from) {
+        // Must remove our copier from the old model-field dep.
+        unsubscribe_dep(copier.from, copier);
+      }
+      if (new_val instanceof Model) {
+        // Subscribe a copier to the model-field dep to copy its value to our dep.
+        if (!copier) dep.copier = copier = { value:null, wait:0, fwd:[], fn:dep_upd_copy_value, from:null }; // dep.
+        var from_dep = new_val.get(dep.name);
+        copier.from = from_dep;
+        subscribe_dep(from_dep, copier); // can happen during transaction.
+        dep.value = from_dep.value; // update now.
+      } else {
+        // Update this dep from the new immutable data.
+        dep.value = (new_val != null) ? new_val[dep.name] : null;
+      }
+      dep.was = new_val;
+    }
   }
 
   function resolve_in_scope(scope) {
@@ -307,7 +319,8 @@
     if (debug) console.log("[e] resolve in scope: len "+len);
     if (len < 1) return null_dep; // TODO: eliminate.
     // resolve paths by creating deps that watch fields.
-    var dep = name_from_scope(scope, sym_list[tpl[p]]);
+    var top_name = sym_list[tpl[p]];
+    var dep = name_from_scope(scope, top_name);
     for (var i=1; i<len; i++) {
       var name = sym_list[tpl[p+i]];
       if (i === 1) {
@@ -325,11 +338,11 @@
           continue;
         }
       }
-      // Varying dep: field of a Model or field of structured data.
-      // Make a raw field dep that retrieves the value when the upstream changes.
-      // FIXME: can the field BECOME a model later?
-      var watch = { value:null, wait:0, fwd:[], fn:dep_upd_field, from:dep, name:name, was:null }; // dep.
-      dep.fwd['push'](watch);
+      // Varying dep: field of a dep containing a Model or structured data.
+      // Make a field dep that retrieves the value when the upstream changes.
+      var watch = { value:null, wait:0, fwd:[], fn:dep_upd_field, from:dep, name:name, was:null, copier:null }; // dep.
+      dep_upd_field(watch); // TODO: unless any input has "no value"
+      if (dep.wait >= 0) dep.fwd['push'](watch); else watch.wait = -1; // constant.
       dep = watch;
     }
     p += len;
@@ -353,9 +366,14 @@
     var dep = { value:"", wait:0, fwd:[], fn:dep_upd_concat, args:args }; // dep.
     var len = tpl[p++];
     if (debug) console.log("[e] concat: "+len);
+    var ins = 0;
     for (var i=0; i<len; i++) {
-      args['push'](resolve_expr(scope));
+      var src = resolve_expr(scope);
+      args['push'](src);
+      if (src.wait >= 0) { src.fwd['push'](dep); ++ins; } // depend on.
     }
+    dep_upd_concat(dep); // TODO: unless any input has "no value"
+    if (!ins) { dep.wait = -1; } // constant.
     return dep;
   }
 
@@ -369,6 +387,11 @@
     var right = resolve_expr(scope);
     if (debug) console.log("[e] equals:", left, right);
     var dep = { value:"", wait:0, fwd:[], fn:dep_upd_equals, left:left, right:right }; // dep.
+    var ins = 0;
+    if (left.wait >= 0) { left.fwd['push'](dep); ++ins; } // depend on.
+    if (right.wait >= 0) { right.fwd['push'](dep); ++ins; } // depend on.
+    dep_upd_equals(dep); // TODO: unless any input has "no value"
+    if (!ins) { dep.wait = -1; } // constant.
     return dep;
   }
 
@@ -399,7 +422,8 @@
     return dep;
   }
 
-  // ---- creating templates ----
+
+  // -+-+-+-+-+-+-+-+-+ Creating Templates -+-+-+-+-+-+-+-+-+
 
   function is_true(val) {
     // true for non-empty collection or _text_ value.
@@ -459,8 +483,8 @@
     } else {
       // varying value.
       var watch = { value:'', wait:0, fwd:[], fn:dep_upd_text_node, node:node, from:dep }; // dep.
-      console.log("create_bound_text:", dep);
       dep.fwd['push'](watch);
+      dep_upd_text_node(watch); // update now.
     }
     insert_after(parent, after, node);
     return node;
@@ -517,7 +541,7 @@
         }
       }
       // avoid setting className unless we actually changed it.
-      if (dirty) elem['className'] = list.join(' ');
+      if (dirty) elem['className'] = list['join'](' ');
     }
   }
 
@@ -529,14 +553,14 @@
     if (classes !== was) {
       dep.was = classes;
       if (was) {
-        var rm_list = was.split(' ');
-        for (var i=0; i<rm_list.length; i++) {
+        var rm_list = was['split'](' ');
+        for (var i=0; i<rm_list['length']; i++) {
           remove_class(dep.node, rm_list[i]);
         }
       }
       if (classes) {
-        var add_list = classes.split(' ');
-        for (var i=0; i<add_list.length; i++) {
+        var add_list = classes['split'](' ');
+        for (var i=0; i<add_list['length']; i++) {
           add_class(dep.node, add_list[i]);
         }
       }
@@ -586,6 +610,7 @@
             // varying value.
             var watch = { value:null, wait:0, fwd:[], fn:dep_upd_text_attr, node:node, from:dep, name:name }; // dep.
             dep.fwd['push'](watch);
+            dep_upd_text_attr(watch); // update now.
           }
           break;
         case 3:
@@ -601,6 +626,7 @@
             // varying value.
             var watch = { value:null, wait:0, fwd:[], fn:dep_upd_bool_attr, node:node, from:dep, name:name }; // dep.
             dep.fwd['push'](watch);
+            dep_upd_bool_attr(watch); // update now.
           }
           break;
         case 4:
@@ -623,6 +649,7 @@
             // varying value.
             var watch = { value:null, wait:0, fwd:[], fn:dep_upd_bound_classes, node:node, from:dep, was:'' }; // dep.
             dep.fwd['push'](watch);
+            dep_upd_bound_classes(watch); // update now.
           }
           break;
         case 6:
@@ -638,6 +665,7 @@
             // varying value.
             var watch = { value:null, wait:0, fwd:[], fn:dep_upd_cond_class, node:node, from:dep, name:name }; // dep.
             dep.fwd['push'](watch);
+            dep_upd_cond_class(watch); // update now.
           }
           break;
         default:
@@ -685,19 +713,19 @@
 
   function dep_upd_condition(dep) {
     // create or destroy the `contents` based on boolean `value`.
-    if (is_true(dep.value)) {
+    if (is_true(dep.from.value)) {
       if (!dep.present) {
         dep.present = true;
         // spawn all dom nodes, bind watches to deps in the scope.
         // pass through `parent` and `after` so the contents will be created inline.
-        spawn_tpl(document, dep.parent, dep.after, dep.body_tpl, dep.inner, dep.inner.dom);
+        spawn_tpl(document, dep.parent, dep.after, dep.body_tpl, dep.scope, dep.scope.dom);
       }
     } else {
       if (dep.present) {
         dep.present = false;
         // remove all [top-level] dom nodes and unbind all watches.
         // NB. need a list: watches can be bound to parent scopes!
-        reset_scope(dep.inner);
+        reset_scope(dep.scope);
       }
     }
   }
@@ -706,27 +734,20 @@
     // Creates a scope (v-dom) representing the contents of the condition node.
     // The scope toggles between active (has dom nodes) and inactive (empty).
     // TODO: must bind all locally defined names in the scope up-front.
+    // => things inside cond/repeat are conditionally active, but still exist.
     var body_tpl = tpl[p++];
-    var dep = resolve_expr(scope);
+    var src_dep = resolve_expr(scope);
     var cond_scope = Scope(scope, scope.contents); // component `contents` available within `if` nodes.
-    if (dep.wait<0) {
-      // constant value.
-      if (is_true(dep.value)) {
-        // spawn the contents into the inner scope.
-        spawn_tpl(doc, parent, after, body_tpl, cond_scope, cond_scope.dom);
-      }
-    } else {
-      // varying value.
-      var watch = { value:null, wait:0, fwd:[], fn:dep_upd_condition, parent:parent, after:after, body_tpl:body_tpl, scope:cond_scope, present:false }; // dep.
-      dep.fwd['push'](watch);
-    }
-    // Must return a Scope to act as `after` for a subsequent Scope node.
-    return cond_scope;
+    // always create a dep to track the condition state (used for removal, if not updating)
+    var cond_dep = { value:null, wait:0, fwd:[], fn:dep_upd_condition, from:src_dep, parent:parent, after:after, body_tpl:body_tpl, scope:cond_scope, present:false }; // dep.
+    if (src_dep.wait >= 0) src_dep.fwd['push'](cond_dep); // subscribe.
+    dep_upd_condition(cond_dep); // update now.
+    return cond_scope; // must return a Scope to act as `after` for a subsequent Scope node.
   }
 
   function dep_upd_repeat(dep) {
     var doc = document;
-    var seq = dep.value instanceof Array ? dep.value : [];
+    var seq = dep.from.value instanceof Array ? dep.from.value : [];
     var parent = dep.parent;
     var after = dep.after; // start at `after` so our body_tpl will follow its DOM nodes.
     var body_tpl = dep.body_tpl;
@@ -771,39 +792,20 @@
     }
   }
 
-  function repeat_once(doc, parent, after, seq, body_tpl, bind_as, rep_scope) {
-    for (var i=0; i<seq['length']; i++) {
-      var model = seq[i];
-      // var key = model ? (model.id || i) : i; // KEY function.
-      var inst_scope = Scope(rep_scope, rep_scope.contents); // component `contents` available within `repeat` nodes.
-      // TODO: are models deps?
-      inst_scope.binds[bind_as] = { value:model, wait:-1 }; // dep.
-      spawn_tpl(doc, parent, after, body_tpl, inst_scope, inst_scope.dom);
-      rep_scope.dom['push'](inst_scope);
-      after = inst_scope;
-    }
-  }
-
   function create_repeat(doc, parent, after, scope) {
     // Creates a scope (v-dom) representing the contents of the repeat node.
     // When the expression value changes, iterates over the new value creating
     // and destroying repeats to bring the view into sync with the value.
     var bind_as = sym_list[tpl[p++]]; // TODO: flatten scopes -> becomes an index.
     var body_tpl = tpl[p++];
-    var dep = resolve_expr(scope);
+    var src_dep = resolve_expr(scope);
     var rep_scope = Scope(scope, scope.contents); // component `contents` available within `repeat` nodes.
-    if (dep.wait<0) {
-      // constant value.
-      if (dep.value instanceof Array) {
-        repeat_once(doc, parent, after, dep.value, body_tpl, bind_as, rep_scope);
-      }
-    } else {
-      // varying value.
-      var watch = { value:null, wait:0, fwd:[], fn:dep_upd_repeat, parent:parent, after:after,
+    // always create a dep to track the repeat state (used for removal, if not updating)
+    var rep_dep = { value:null, wait:0, fwd:[], fn:dep_upd_repeat, from:src_dep, parent:parent, after:after,
                     body_tpl:body_tpl, bind_as:bind_as, scope:rep_scope, has:{} }; // dep.
-      dep.fwd['push'](watch);
-    }
-    return rep_scope;
+    if (src_dep.wait >= 0) src_dep.fwd['push'](rep_dep); // subscribe.
+    dep_upd_repeat(rep_dep); // update now.
+    return rep_scope; // must return a Scope to act as `after` for a subsequent Scope node.
   }
 
   var dom_create = [
@@ -832,17 +834,37 @@
     // cursor is shared state: no multiple returns, not going to return arrays, could pass an object?
     var save_p = p;
     p = tpl[tpl_id]; // get tpl offset inside tpl array.
-    if (debug) console.log("spawn tpl:", tpl_id+" at "+p);
+    if (debug) console.log("spawn tpl: "+tpl_id+" at "+p);
     spawn_nodes(doc, parent, after, scope, capture);
     p = save_p; // must restore because templates can be recursive.
   }
 
-  // ---- init ----
+
+  // -+-+-+-+-+-+-+-+-+ Route Model -+-+-+-+-+-+-+-+-+
+
+  function new_router() {
+    var route = { value:location.hash, wait:0, fwd:[], dirty:false, name:'route' }; // dep.
+    var router = new Model('@router');
+    router._deps['route'] = route;
+    function hash_change() {
+      var hash = location.hash;
+      if (hash !== route.value) {
+        route.value = hash;
+        mark_dirty(route);
+      }
+    }
+    window.addEventListener('hashchange', hash_change, false);
+    return router;
+  }
+
+
+  // -+-+-+-+-+-+-+-+-+ Init -+-+-+-+-+-+-+-+-+
 
   manglr.bind_doc = function (doc, payload, data) {
     tpl = payload[0];
     sym_list = payload[1];
     var root_scope = Scope(null, null);
+    root_scope.binds['@router'] = new_router();
     console.log(root_scope); // DEBUGGING.
     spawn_tpl(doc, doc.body, null, 0, root_scope, null);
   };

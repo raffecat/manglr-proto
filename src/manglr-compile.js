@@ -74,6 +74,15 @@ manglr = (function(){
     tpl[patch] = tpl.length - patch; // size of inline tpl.
   }
 
+  function create_tpl(contents) {
+    var cid = nextSid++;
+    var sid = 't'+cid;
+    // looks like a component, but only 'tpl' is used for encoding.
+    var comp = { id:sid, cid:cid, tpl:contents };
+    comp_list.push(comp);
+    return cid;
+  }
+
   function encode_named_nodes(tpl, binds) {
     // HACK : convert from attr_ops to expr_ops ...
     var pairs = [];
@@ -137,7 +146,7 @@ manglr = (function(){
   }
   DomComponent.prototype.encode = function (tpl) {
     // need to resolve components before encode to determine which ones are used?
-    // const comp = scope.c_tags[this.name];
+    // var comp = scope.c_tags[this.name];
     // if (!comp) error(this.node, 'no component found (in scope) for custom tag "'+this.name+'"');
     tpl.push(dom_ops.component, this.cid);
     encode_named_nodes(tpl, this.binds);
@@ -146,23 +155,21 @@ manglr = (function(){
 
   function CondNode(expr, contents) {
     this.expr = expr;
-    this.contents = contents;
+    this.tpl_id = create_tpl(contents); // must reserve tpl slot before encoding begins.
   }
   CondNode.prototype.encode = function (tpl) {
-    tpl.push(dom_ops.condition);
+    tpl.push(dom_ops.condition, this.tpl_id);
     this.expr.encode(tpl);
-    encode_inline(tpl, this.contents);
   };
 
   function RepeatNode(bind_as, expr, contents) {
     this.bind_as = bind_as;
     this.expr = expr;
-    this.contents = contents;
+    this.tpl_id = create_tpl(contents); // must reserve tpl slot before encoding begins.
   }
   RepeatNode.prototype.encode = function (tpl) {
-    tpl.push(dom_ops.repeat, sym(this.bind_as));
+    tpl.push(dom_ops.repeat, sym(this.bind_as), this.tpl_id);
     this.expr.encode(tpl);
-    encode_inline(tpl, this.contents);
   };
 
 
@@ -469,7 +476,8 @@ manglr = (function(){
     if (typeof(name) !== 'string') throw new Error("implicit(name, path) the `name` must be a string");
     if (typeof(path) !== 'string') throw new Error("implicit(name, path) the `path` must be a string");
     // TODO: introduce an implicit "in" binding up through enclosing scopes until we reach a template.
-    return new ConstText('((implicit:'+name+'.'+path+'))');
+    // Quick hack: look it up in the scope, which links all the way to the root scope (!!)
+    return parse_expr(name+'.'+path);
   };
   NodeProxy.prototype.add_children = function (children) {
     Array.prototype.push.apply(this._children, children);
@@ -561,7 +569,7 @@ manglr = (function(){
 
   var tpl_re = new RegExp("([^{]*){?([^}]*)}?", "y");
   var mod_con_re = new RegExp("\\s*([A-Za-z][-A-Za-z0-9_]*):\\s*(.*)", "y"); // "cond-name: (expr)"
-  var expr_re = new RegExp("\\s*(?:([A-Za-z][A-Za-z0-9_.]*)|(\\+|\\-|\\*|\\/)|(.))", "y"); // (?:\\.\\w[\\w\\d_]*)*
+  var expr_re = new RegExp("\\s*(?:([@A-Za-z][A-Za-z0-9_.]*)|(\\+|\\-|\\*|\\/)|(.))", "y"); // (?:\\.\\w[\\w\\d_]*)*
   var norm_re = new RegExp("\\s+", "g")
 
   function norm_ws(text) {
@@ -642,7 +650,7 @@ manglr = (function(){
   }
 
   function parse_text_tpl_as_expr(text) {
-    const tpl = parse_text_tpl(text);
+    var tpl = parse_text_tpl(text);
     if (tpl.length === 1) return tpl[0];
     if (tpl.length === 0) return new ConstText("");
     return new ConcatText(tpl);
@@ -703,13 +711,27 @@ manglr = (function(){
       }
       var children = parse_children(node, c_tags);
       proxy.add_children(children);
+      // build the output DOM node.
+      var out_node;
       if (tag_tpl) {
-        to_list.push(new DomComponent(tag_tpl.tag, tag_tpl.cid, proxy._binds, proxy._children));
+        out_node = new DomComponent(tag_tpl.tag, tag_tpl.cid, proxy._binds, proxy._children);
       } else {
         // HTML element.
         if (~tag.indexOf('-')) error(node, 3, tag); // debugging: report custom tag names if not a component.
-        to_list.push(new DomTag(tag, proxy._binds, proxy._children));
+        out_node = new DomTag(tag, proxy._binds, proxy._children);
       }
+      // wrap the output node in repeats and conditions.
+      // TODO: sort these using dep-sort, preferring conditions before repeats.
+      for (var r=0, reps=proxy._repeats; r<reps.length/2; r+=2) {
+        var r_expr = reps[r], r_name = reps[r+1];
+        out_node = new RepeatNode(r_name, r_expr, [out_node]);
+      }
+      // emit all conditions with 1 child to follow
+      for (var c=0, conds=proxy._conds; c<conds.length; c++) {
+        out_node = new CondNode(conds[c], [out_node]);
+      }
+      // emit the DomComponent or DomTag
+      to_list.push(out_node);
     } else if (nodeType == 3) { // Text.
       // node.data: CharacterData, DOM level 1.
       var nodes = parse_text_tpl(node.data);
@@ -739,7 +761,7 @@ manglr = (function(){
       node[is_scope] = sid;
       // index components so we can find parent components.
       var tag = node.getAttribute('tag') || error(node, 8, ''); // missing attribute.
-      var comp = { id:sid, cid:cid, tags:{}, tpl:[], node:node, tag:tag };
+      var comp = { id:sid, cid:cid, tpl:[], tags:{}, node:node, tag:tag };
       components[sid] = comp;
       comp_list.push(comp);
       found.push(comp);
