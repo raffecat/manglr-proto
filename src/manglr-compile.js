@@ -39,6 +39,7 @@ manglr = (function(){
     'no handler registered for modular condition named "@"',                // 14
     'component requires an "@" attribute',                                  // 15
     'component "@" cannot be conditional or repeated',                      // 16
+    'component "@" cannot have any child elements',                         // 17
   ];
 
   var log = console.log;
@@ -384,16 +385,11 @@ manglr = (function(){
     this._children = [];
     this._ended = false;
   }
-  NodeProxy.prototype.text = function (src) {
-    // parse a text expression (with placeholders) in the scope of this node.
-    if (this._ended) throw new Error("text(src) too late to modify this node");
-    return parse_text_tpl(src);
-  };
   NodeProxy.prototype.expr = function (src) {
     // parse an expression in the scope of this node.
     if (this._ended) throw new Error("expr(src) too late to modify this node");
     if (typeof(src) !== 'string') throw new Error("expr(src) the `src` must be a string");
-    return parse_text_tpl_as_expr(src);
+    return parse_expr(src);
   };
   NodeProxy.prototype.text_tpl = function (text) {
     // parse an expression in the scope of this node.
@@ -418,7 +414,7 @@ manglr = (function(){
       }
     } else {
       // TODO: validate as a boolean expression.
-      return parse_text_tpl_as_expr(src);
+      return parse_expr(src);
     }
   };
   NodeProxy.prototype.equals = function (left, right) {
@@ -505,7 +501,7 @@ manglr = (function(){
   // ---- modular conditions ----
 
   mod_conds['route'] = function (node, rest) {
-    console.log("ROUTE COND:", rest, node);
+    log("[ ROUTE COND:", rest, node);
     var route = node.implicit('@router', 'route');
     // TODO: need to trim `rest` before matching - text tpl can contain whitespace.
     return node.equals(route, node.text_tpl(rest));
@@ -515,14 +511,14 @@ manglr = (function(){
   // ---- directives ----
 
   directives['if'] = function (node, value) {
-    console.log("IF:", value, node);
+    log("[ IF:", value, node);
     // - compile the expression in the scope of `node`
     // - wrap the node in a condition node.
     node.cond(node.cond_expr(value));
   };
 
   directives['repeat'] = function (node, value) {
-    console.log("REPEAT:", value, node);
+    log("[ REPEAT:", value, node);
     // - compile the expression in the scope of the inner nodes [repeat creates its own scopes]
     // - wrap the inner nodes in a condition node.
     var args = value.split(' from ');
@@ -533,7 +529,7 @@ manglr = (function(){
   };
 
   directives['if-route'] = function (node, value) {
-    console.log("IF-ROUTE:", value, node);
+    log("[ IF-ROUTE:", value, node);
     var route = node.implicit('@router', 'route');
     // TODO: need to trim `value` before matching - text tpl can contain whitespace.
     node.cond(node.equals(route, node.text_tpl(value)));
@@ -561,12 +557,12 @@ manglr = (function(){
   // ---- prefix handlers ----
 
   prefixes['class-'] = function(node, value, name) {
-    console.log("CLASS:", name, value, node);
+    log("[ CLASS:", name, value, node);
     node.cond_class(name, node.cond_expr(value));
   };
 
   prefixes['style-'] = function(node, value, name) {
-    console.log("STYLE:", name, value, node);
+    log("[ STYLE:", name, value, node);
     node.bind_style(name, node.expr(value));
   };
 
@@ -604,7 +600,7 @@ manglr = (function(){
   // some tentative parser stuff that needs to be re-written properly...
 
   function parse_expr(text) {
-    log("parse_expr:", text);
+    log("[ parse_expr:", text, "]");
     expr_re.lastIndex = 0;
     var left = null;
     var i = 0;
@@ -618,21 +614,21 @@ manglr = (function(){
       if (path) {
         if (left) {
           // syntax error.
-          log("+++ expecting an operator, in expression:", text);
+          log("manglr: expecting an operator, in expression:", text);
           return new ConstText("");
         }
         left = new ScopeLookup(path.split('.'));
       } else if (dyadic) {
         if (!left) {
           // syntax error.
-          log("+++ dyadic operator must follow an expression:", text);
+          log("manglr: dyadic operator must follow an expression:", text);
           return new ConstText("");
         }
         right = parse_expr();
         left = new dy_ops[dyadic](left, right);
       } else if (any && !/^\s+$/.test(any)) {
         // FIXME: no, it backs up one char so it can match a space against the '.' x_x
-        log("+++ syntax error in expression:", text, expr_re.lastIndex);
+        log("manglr: syntax error in expression:", text, expr_re.lastIndex);
         return new ConstText("");
       } else {
         // skipped whitespace and reached end of input.
@@ -642,7 +638,7 @@ manglr = (function(){
     }
     // end of input.
     if (!left) {
-      log("+++ expression cannot be empty:", text);
+      log("manglr: expression cannot be empty:", text);
       return new ConstText("");
     }
     return left;
@@ -724,7 +720,7 @@ manglr = (function(){
             }
           }
           // bind the attribute to the (text-template) expression.
-          proxy.bind_attr(name, proxy.expr(value));
+          proxy.bind_attr(name, proxy.text_tpl(value));
         }
       }
       var children = parse_children(node, c_tags);
@@ -732,14 +728,18 @@ manglr = (function(){
       // build the output DOM node.
       var out_node;
       if (tag === 'router') {
+        // TODO: need to hoist controller so it is spawned first at component top-level.
         if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, tag); return; }
-        console.log("@ ROUTER:", proxy);
+        if (proxy._children['length']) { error(node, 17, tag); return; } // TODO: ignore DomText whitespace.
+        log("[ ROUTER:", proxy);
         var id = find_literal_text(proxy, 'id');
         if (!id) { error(node, 15, 'id'); return; }
         out_node = new RouterNode(id);
       } else if (tag === 'authentication') {
+        // TODO: need to hoist controller so it is spawned first at component top-level.
+        // TODO: the contents need to be left in-place wrapped in a condition node.
         if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, tag); return; }
-        console.log("@ AUTHENTICATION:", proxy);
+        log("[ AUTHENTICATION:", proxy);
         var id = find_literal_text(proxy, 'id');
         if (!id) { error(node, 15, 'id'); return; }
         out_node = new AuthenticationNode(id);
@@ -848,7 +848,7 @@ manglr = (function(){
         parse_dom_node(child, c_tags, comp.tpl);
         child = child.nextSibling;
       }
-      console.log("component:", comp.tag, comp.tpl);
+      log("[ COMPONENT:", comp.tag, comp.tpl);
     }
   }
 
@@ -886,8 +886,8 @@ manglr = (function(){
       }
     }
     var payload = [encoded, sym_list];
-    console.log("payload:", payload);
-    console.log(JSON.stringify(payload));
+    log("payload:", payload);
+    log(JSON.stringify(payload));
     return payload;
   }
 
