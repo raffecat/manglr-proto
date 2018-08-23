@@ -823,14 +823,18 @@
   function create_router(doc, parent, after, scope) {
     var bind_as = sym_list[tpl[p++]];
     var router = new Model(bind_as);
+    scope.binds[bind_as] = router;
     var route_dep = { value:null, wait:0, fwd:[], dirty:false, name:'route' }; // dep.
     router._deps['route'] = route_dep;
     dep_bind_to_hash_change(route_dep); // avoids capturing doc, parent, etc.
-    scope.binds[bind_as] = router;
   }
 
   function create_auth(doc, parent, after, scope) {
     var bind_as = sym_list[tpl[p++]];
+    var auth = new Model(bind_as);
+    scope.binds[bind_as] = auth;
+    var auth_required = { value:false, wait:0, fwd:[], dirty:false, name:'auth_required' }; // dep.
+    auth._deps['auth_required'] = auth_required;
   }
 
   var dom_create = [

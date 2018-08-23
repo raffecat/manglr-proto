@@ -670,18 +670,18 @@ manglr = (function(){
     return new ConcatText(tpl);
   }
 
-  function parse_children(node, c_tags) {
+  function parse_children(node, c_tags, comp_ctls) {
     // parse child nodes into their own tpl.
     var children = [];
     var child = node.firstChild;
     while (child != null) {
-      parse_dom_node(child, c_tags, children);
+      parse_dom_node(child, c_tags, children, comp_ctls);
       child = child.nextSibling;
     }
     return children;
   }
 
-  function parse_dom_node(node, c_tags, to_list) {
+  function parse_dom_node(node, c_tags, to_list, comp_ctls) {
     // parse a tpl out of the dom for spawning.
     // note: one DOM node can yield multiple AST nodes! (e.g. body text placeholders)
     var nodeType = node.nodeType;
@@ -723,26 +723,30 @@ manglr = (function(){
           proxy.bind_attr(name, proxy.text_tpl(value));
         }
       }
-      var children = parse_children(node, c_tags);
+      var children = parse_children(node, c_tags, comp_ctls);
       proxy.add_children(children);
       // build the output DOM node.
-      var out_node;
+      var out_node = null;
       if (tag === 'router') {
-        // TODO: need to hoist controller so it is spawned first at component top-level.
+        // TODO: move this to a tag registry.
         if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, tag); return; }
         if (proxy._children['length']) { error(node, 17, tag); return; } // TODO: ignore DomText whitespace.
         log("[ ROUTER:", proxy);
         var id = find_literal_text(proxy, 'id');
         if (!id) { error(node, 15, 'id'); return; }
-        out_node = new RouterNode(id);
+        comp_ctls.push(new RouterNode(id));
       } else if (tag === 'authentication') {
-        // TODO: need to hoist controller so it is spawned first at component top-level.
-        // TODO: the contents need to be left in-place wrapped in a condition node.
+        // TODO: move this to a tag registry.
         if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, tag); return; }
         log("[ AUTHENTICATION:", proxy);
         var id = find_literal_text(proxy, 'id');
         if (!id) { error(node, 15, 'id'); return; }
-        out_node = new AuthenticationNode(id);
+        comp_ctls.push(new AuthenticationNode(id));
+        // leave the authentication contents in-place, but wrap in a condition node.
+        if (proxy._children.length) {
+          var auth_expr = proxy.implicit(id, 'auth_required');
+          out_node = new CondNode(auth_expr, proxy._children);
+        }
       } else if (tag_tpl) {
         out_node = new DomComponent(tag_tpl.tag, tag_tpl.cid, proxy._binds, proxy._children);
       } else {
@@ -750,18 +754,20 @@ manglr = (function(){
         if (~tag.indexOf('-')) error(node, 3, tag); // debugging: report custom tag names if not a component.
         out_node = new DomTag(tag, proxy._binds, proxy._children);
       }
-      // wrap the output node in repeats and conditions.
-      // TODO: sort these using dep-sort, preferring conditions before repeats.
-      for (var r=0, reps=proxy._repeats; r<reps.length/2; r+=2) {
-        var r_expr = reps[r], r_name = reps[r+1];
-        out_node = new RepeatNode(r_name, r_expr, [out_node]);
+      if (out_node) {
+        // wrap the output node in repeats and conditions.
+        // TODO: sort these using dep-sort, preferring conditions before repeats.
+        for (var r=0, reps=proxy._repeats; r<reps.length/2; r+=2) {
+          var r_expr = reps[r], r_name = reps[r+1];
+          out_node = new RepeatNode(r_name, r_expr, [out_node]);
+        }
+        // emit all conditions with 1 child to follow
+        for (var c=0, conds=proxy._conds; c<conds.length; c++) {
+          out_node = new CondNode(conds[c], [out_node]);
+        }
+        // emit the DomComponent or DomTag
+        to_list.push(out_node);
       }
-      // emit all conditions with 1 child to follow
-      for (var c=0, conds=proxy._conds; c<conds.length; c++) {
-        out_node = new CondNode(conds[c], [out_node]);
-      }
-      // emit the DomComponent or DomTag
-      to_list.push(out_node);
     } else if (nodeType == 3) { // Text.
       // node.data: CharacterData, DOM level 1.
       var nodes = parse_text_tpl(node.data);
@@ -843,27 +849,22 @@ manglr = (function(){
         }
       }
       // parse dom nodes to create a template for spawning.
-      var child = node.firstChild;
-      while (child != null) {
-        parse_dom_node(child, c_tags, comp.tpl);
-        child = child.nextSibling;
-      }
+      var comp_ctls = []; // controller instances inside this component.
+      var comp_els = parse_children(node, c_tags, comp_ctls);
+      comp.tpl = comp_ctls.concat(comp_els);
       log("[ COMPONENT:", comp.tag, comp.tpl);
     }
   }
 
-  function parse_body(c_tags) {
-    var body = document.body;
-    // parse children of the body into a tpl.
-    var tpl = parse_children(body, c_tags);
+  function clear_doc_body() {
     // remove the children of body.
+    var body = document.body;
     var child = body.firstChild;
     while (child != null) {
       var next = child.nextSibling;
       body.removeChild(child);
       child = next;
     }
-    return tpl;
   }
 
   function parse_document(doc) {
@@ -871,8 +872,13 @@ manglr = (function(){
     if (prefixes_dirty) rebuild_prefixes();
     // must find all component tags first, since they affect walk_dom.
     find_components(doc);
-    // parse the document body into a template like the AoT compiler would.
-    root_component.tpl = parse_body(root_component.tags);
+    // parse the remaining document body into the root component.
+    var root_ctls = []; // controller instances inside this component.
+    var root_els = parse_children(document.body, root_component.tags, root_ctls);
+    root_component.tpl = root_ctls.concat(root_els);
+    // empty the document body for the runtime to re-populate.
+    clear_doc_body();
+    // encode all templates for the runtime.
     var encoded = [];
     for (var i=0; i<comp_list.length; i++) {
       encoded.push(0); // placeholder for tpl offset.
