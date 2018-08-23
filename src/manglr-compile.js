@@ -7,6 +7,7 @@ manglr = (function(){
   var prefix_re;
   var hasOwn = Object.prototype.hasOwnProperty;
   var nextSid = 1;
+  var builtins = {};   // registry.
   var directives = {}; // registry.
   var prefixes = {};   // registry.
   var mod_conds = {};  // registry.
@@ -498,6 +499,43 @@ manglr = (function(){
   };
 
 
+  // ---- built-in components ----
+
+  function find_literal_text(proxy, name) {
+    var binds = proxy._binds;
+    for (var bind of binds) {
+      if (bind instanceof LiteralText && bind.name === name) {
+        return bind.value;
+      }
+    }
+  }
+
+  builtins['router'] = function (node, proxy, comp_ctls) {
+    if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, 'router'); return; }
+    if (proxy._children['length']) { error(node, 17, 'router'); return; } // TODO: ignore DomText whitespace.
+    log("[ ROUTER:", proxy);
+    var id = find_literal_text(proxy, 'id');
+    if (!id) { error(node, 15, 'id'); return; }
+    comp_ctls.push(new RouterNode(id));
+    return null; // no out_node.
+  };
+
+  builtins['authentication'] = function (node, proxy, comp_ctls) {
+    if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, 'authentication'); return; }
+    log("[ AUTHENTICATION:", proxy);
+    var id = find_literal_text(proxy, 'id');
+    if (!id) { error(node, 15, 'id'); return; }
+    comp_ctls.push(new AuthenticationNode(id));
+    // leave the authentication contents in-place, but wrap in a condition node.
+    var out_node = null;
+    if (proxy._children.length) {
+      var auth_expr = proxy.implicit(id, 'auth_required');
+      out_node = new CondNode(auth_expr, proxy._children);
+    }
+    return out_node;
+  };
+
+
   // ---- modular conditions ----
 
   mod_conds['route'] = function (node, rest) {
@@ -727,26 +765,9 @@ manglr = (function(){
       proxy.add_children(children);
       // build the output DOM node.
       var out_node = null;
-      if (tag === 'router') {
-        // TODO: move this to a tag registry.
-        if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, tag); return; }
-        if (proxy._children['length']) { error(node, 17, tag); return; } // TODO: ignore DomText whitespace.
-        log("[ ROUTER:", proxy);
-        var id = find_literal_text(proxy, 'id');
-        if (!id) { error(node, 15, 'id'); return; }
-        comp_ctls.push(new RouterNode(id));
-      } else if (tag === 'authentication') {
-        // TODO: move this to a tag registry.
-        if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, tag); return; }
-        log("[ AUTHENTICATION:", proxy);
-        var id = find_literal_text(proxy, 'id');
-        if (!id) { error(node, 15, 'id'); return; }
-        comp_ctls.push(new AuthenticationNode(id));
-        // leave the authentication contents in-place, but wrap in a condition node.
-        if (proxy._children.length) {
-          var auth_expr = proxy.implicit(id, 'auth_required');
-          out_node = new CondNode(auth_expr, proxy._children);
-        }
+      var bi_comp = builtins[tag];
+      if (bi_comp) {
+        out_node = bi_comp(node, proxy, comp_ctls);
       } else if (tag_tpl) {
         out_node = new DomComponent(tag_tpl.tag, tag_tpl.cid, proxy._binds, proxy._children);
       } else {
@@ -779,15 +800,6 @@ manglr = (function(){
           // wrap the expr in a bound dom text node.
           to_list.push(new DomBoundText(node));
         }
-      }
-    }
-  }
-
-  function find_literal_text(proxy, name) {
-    var binds = proxy._binds;
-    for (var bind of binds) {
-      if (bind instanceof LiteralText && bind.name === name) {
-        return bind.value;
       }
     }
   }

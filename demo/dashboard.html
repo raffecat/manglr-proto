@@ -50,7 +50,7 @@
     </component>
 
     <component tag="orders-page">
-      <collection id="orders" get="/api/orders" auth="@login" poll="30s" cache="30s" save="patch"></collection>
+      <store id="orders" get="/api/orders" auth="@login" poll="30s" cache="30s" save="patch"></store>
 
       <div class="row">
         <div class="orders-leftcol">
