@@ -21,6 +21,7 @@
   </head>
 
   <body>
+    <router id="@router"></router>
 
     <nav-bar-top></nav-bar-top>
     <page-layout></page-layout>
@@ -156,7 +157,7 @@
     </component>
 
     <authentication id="@login" mode="bearer" api="/api/login" enc="json" ret="token" error="error">
-      <div class="overlay hide">
+      <div class="overlay">
         <form class="form-signin" submit-to="@login">
           <h2 class="form-signin-heading">Please sign in</h2>
           <label for="inputEmail" class="sr-only">Email address</label>

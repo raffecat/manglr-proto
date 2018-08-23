@@ -37,6 +37,8 @@ manglr = (function(){
     'handler for attribute "@" did not return an [expression]',             // 12
     'class attribute should not be bound to an expression: @',              // 13
     'no handler registered for modular condition named "@"',                // 14
+    'component requires an "@" attribute',                                  // 15
+    'component "@" cannot be conditional or repeated',                      // 16
   ];
 
   var log = console.log;
@@ -100,12 +102,14 @@ manglr = (function(){
   }
 
   var dom_ops = {
-    text:       0,
-    bound_text: 1,
-    tag:        2,
-    component:  3,
-    condition:  4,
-    repeat:     5,
+    text:            0,
+    bound_text:      1,
+    tag:             2,
+    component:       3,
+    condition:       4,
+    repeat:          5,
+    router:          6,
+    authentication:  7,
   };
 
   function DomText(text) {
@@ -170,6 +174,20 @@ manglr = (function(){
   RepeatNode.prototype.encode = function (tpl) {
     tpl.push(dom_ops.repeat, sym(this.bind_as), this.tpl_id);
     this.expr.encode(tpl);
+  };
+
+  function RouterNode(bind_as) {
+    this.bind_as = bind_as;
+  }
+  RouterNode.prototype.encode = function (tpl) {
+    tpl.push(dom_ops.router, sym(this.bind_as));
+  };
+
+  function AuthenticationNode(bind_as) {
+    this.bind_as = bind_as;
+  }
+  AuthenticationNode.prototype.encode = function (tpl) {
+    tpl.push(dom_ops.authentication, sym(this.bind_as));
   };
 
 
@@ -661,13 +679,13 @@ manglr = (function(){
     var children = [];
     var child = node.firstChild;
     while (child != null) {
-      parse_tpl(child, c_tags, children);
+      parse_dom_node(child, c_tags, children);
       child = child.nextSibling;
     }
     return children;
   }
 
-  function parse_tpl(node, c_tags, to_list) {
+  function parse_dom_node(node, c_tags, to_list) {
     // parse a tpl out of the dom for spawning.
     // note: one DOM node can yield multiple AST nodes! (e.g. body text placeholders)
     var nodeType = node.nodeType;
@@ -713,7 +731,19 @@ manglr = (function(){
       proxy.add_children(children);
       // build the output DOM node.
       var out_node;
-      if (tag_tpl) {
+      if (tag === 'router') {
+        if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, tag); return; }
+        console.log("@ ROUTER:", proxy);
+        var id = find_literal_text(proxy, 'id');
+        if (!id) { error(node, 15, 'id'); return; }
+        out_node = new RouterNode(id);
+      } else if (tag === 'authentication') {
+        if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, tag); return; }
+        console.log("@ AUTHENTICATION:", proxy);
+        var id = find_literal_text(proxy, 'id');
+        if (!id) { error(node, 15, 'id'); return; }
+        out_node = new AuthenticationNode(id);
+      } else if (tag_tpl) {
         out_node = new DomComponent(tag_tpl.tag, tag_tpl.cid, proxy._binds, proxy._children);
       } else {
         // HTML element.
@@ -743,6 +773,15 @@ manglr = (function(){
           // wrap the expr in a bound dom text node.
           to_list.push(new DomBoundText(node));
         }
+      }
+    }
+  }
+
+  function find_literal_text(proxy, name) {
+    var binds = proxy._binds;
+    for (var bind of binds) {
+      if (bind instanceof LiteralText && bind.name === name) {
+        return bind.value;
       }
     }
   }
@@ -806,7 +845,7 @@ manglr = (function(){
       // parse dom nodes to create a template for spawning.
       var child = node.firstChild;
       while (child != null) {
-        parse_tpl(child, c_tags, comp.tpl);
+        parse_dom_node(child, c_tags, comp.tpl);
         child = child.nextSibling;
       }
       console.log("component:", comp.tag, comp.tpl);

@@ -808,6 +808,31 @@
     return rep_scope; // must return a Scope to act as `after` for a subsequent Scope node.
   }
 
+  function dep_bind_to_hash_change(dep) {
+    dep.value = location.hash;
+    function hash_change() {
+      var hash = location.hash;
+      if (hash !== dep.value) {
+        dep.value = hash;
+        mark_dirty(dep);
+      }
+    }
+    window.addEventListener('hashchange', hash_change, false);
+  }
+
+  function create_router(doc, parent, after, scope) {
+    var bind_as = sym_list[tpl[p++]];
+    var router = new Model(bind_as);
+    var route_dep = { value:null, wait:0, fwd:[], dirty:false, name:'route' }; // dep.
+    router._deps['route'] = route_dep;
+    dep_bind_to_hash_change(route_dep); // avoids capturing doc, parent, etc.
+    scope.binds[bind_as] = router;
+  }
+
+  function create_auth(doc, parent, after, scope) {
+    var bind_as = sym_list[tpl[p++]];
+  }
+
   var dom_create = [
     create_text,       // 0
     create_bound_text, // 1
@@ -815,6 +840,8 @@
     create_component,  // 3
     create_condition,  // 4
     create_repeat,     // 5
+    create_router,     // 6  <router>
+    create_auth,       // 7  <authentication>
   ];
 
   function spawn_nodes(doc, parent, after, scope, capture) {
@@ -824,9 +851,11 @@
     for (var i=0; i<len; i++) {
       var op = tpl[p++];
       var next = dom_create[op](doc, parent, after, scope);
-      next.bk = after; // backwards link for finding previous DOM nodes.
-      if (capture) capture['push'](next); // capture top-level nodes in a scope.
-      after = next;
+      if (next) {
+        next.bk = after; // backwards link for finding previous DOM nodes.
+        if (capture) capture['push'](next); // capture top-level nodes in a scope.
+        after = next;
+      }
     }
   }
 
@@ -840,31 +869,12 @@
   }
 
 
-  // -+-+-+-+-+-+-+-+-+ Route Model -+-+-+-+-+-+-+-+-+
-
-  function new_router() {
-    var route = { value:location.hash, wait:0, fwd:[], dirty:false, name:'route' }; // dep.
-    var router = new Model('@router');
-    router._deps['route'] = route;
-    function hash_change() {
-      var hash = location.hash;
-      if (hash !== route.value) {
-        route.value = hash;
-        mark_dirty(route);
-      }
-    }
-    window.addEventListener('hashchange', hash_change, false);
-    return router;
-  }
-
-
   // -+-+-+-+-+-+-+-+-+ Init -+-+-+-+-+-+-+-+-+
 
   manglr.bind_doc = function (doc, payload, data) {
     tpl = payload[0];
     sym_list = payload[1];
     var root_scope = Scope(null, null);
-    root_scope.binds['@router'] = new_router();
     console.log(root_scope); // DEBUGGING.
     spawn_tpl(doc, doc.body, null, 0, root_scope, null);
   };
