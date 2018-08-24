@@ -1,7 +1,10 @@
+/* <^> Manglr 0.1 | by Andrew Towers | MIT License | https://github.com/raffecat/manglr-proto */
+
 var debug = true;
 var log_expr = true;
 var log_spawn = false;
 var log_deps = true;
+
 (function(Node, Array, Object, Error){
   "use strict";
 
