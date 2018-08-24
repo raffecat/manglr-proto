@@ -32,5 +32,8 @@
   "bugs": {
     "url": "https://github.com/raffecat/manglr-proto/issues"
   },
-  "homepage": "https://github.com/raffecat/manglr-proto#readme"
+  "homepage": "https://github.com/raffecat/manglr-proto#readme",
+  "dependencies": {
+    "node-html-parser": "^1.1.9"
+  }
 }
