@@ -112,6 +112,7 @@ manglr = (function(){
     repeat:          5,
     router:          6,
     authentication:  7,
+    store:           8,
   };
 
   function DomText(text) {
@@ -190,6 +191,15 @@ manglr = (function(){
   }
   AuthenticationNode.prototype.encode = function (tpl) {
     tpl.push(dom_ops.authentication, sym(this.bind_as));
+  };
+
+  function StoreNode(bind_as, get_url, auth_ref) {
+    this.bind_as = bind_as;
+    this.get_url = get_url;
+    this.auth_ref = auth_ref;
+  }
+  StoreNode.prototype.encode = function (tpl) {
+    tpl.push(dom_ops.store, sym(this.bind_as), sym(this.get_url), sym(this.auth_ref));
   };
 
 
@@ -508,6 +518,8 @@ manglr = (function(){
         return bind.value;
       }
     }
+    error(proxy._node, 15, name);
+    return null;
   }
 
   builtins['router'] = function (node, proxy, comp_ctls) {
@@ -515,7 +527,7 @@ manglr = (function(){
     if (proxy._children['length']) { error(node, 17, 'router'); return; } // TODO: ignore DomText whitespace.
     log("[ ROUTER:", proxy);
     var id = find_literal_text(proxy, 'id');
-    if (!id) { error(node, 15, 'id'); return; }
+    if (!id) return null;
     comp_ctls.push(new RouterNode(id));
     return null; // no out_node.
   };
@@ -524,7 +536,7 @@ manglr = (function(){
     if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, 'authentication'); return; }
     log("[ AUTHENTICATION:", proxy);
     var id = find_literal_text(proxy, 'id');
-    if (!id) { error(node, 15, 'id'); return; }
+    if (!id) return null;
     comp_ctls.push(new AuthenticationNode(id));
     // leave the authentication contents in-place, but wrap in a condition node.
     var out_node = null;
@@ -533,6 +545,18 @@ manglr = (function(){
       out_node = new CondNode(auth_expr, proxy._children);
     }
     return out_node;
+  };
+
+  builtins['store'] = function (node, proxy, comp_ctls) {
+    if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, 'store'); return; }
+    if (proxy._children['length']) { error(node, 17, 'store'); return; } // TODO: ignore DomText whitespace.
+    log("[ STORE:", proxy);
+    var id = find_literal_text(proxy, 'id');
+    var get_url = find_literal_text(proxy, 'get');
+    var auth_ref = find_literal_text(proxy, 'auth');
+    if (!(id && get_url && auth_ref)) return;
+    comp_ctls.push(new StoreNode(id, get_url, auth_ref));
+    return null; // no out_node.
   };
 
 
@@ -562,7 +586,7 @@ manglr = (function(){
     var args = value.split(' from ');
     if (args.length !== 2) throw new Error('incorrect syntax - must be repeat="{expr} as name"');
     var name = args[0];
-    var expr = args[1];
+    var expr = args[1]+'.items';
     node.repeat(node.expr(expr), name);
   };
 

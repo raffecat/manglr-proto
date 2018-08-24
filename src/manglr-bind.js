@@ -6,6 +6,7 @@
   var nextSid = 1;
   var null_dep = { value:null, wait:-1 }; // dep.
   var is_text = { "boolean":1, "number":1, "string":1, "symbol":1, "undefined":0, "object":0, "function":0 };
+  var json_re = new RegExp("^application\/json", "i");
   var sym_list; // Array: symbol strings.
   var tpl; // Array: encoded templates.
   var p = 0; // read position in tpl being spawned.
@@ -58,7 +59,7 @@
     do {
       var binds = scope.binds;
       if (hasOwn['call'](binds, name)) {
-        console.log("name_from_scope: "+name+" -> ", binds[name]);
+        console.log("name_from_scope: "+name+" -> ", binds[name]); // DEBUGGING.
         return binds[name];
       }
       scope = scope.up;
@@ -837,6 +838,76 @@
     auth._deps['auth_required'] = auth_required;
   }
 
+  function postJson(url, data, callback) {
+    var tries = 0;
+    post();
+    function retry(ret) {
+      tries++;
+      if (ret === 'retry' || tries < 5) {
+        var delay = Math.min(tries * 1000, 5000); // back-off.
+        window.setTimeout(post, delay);
+      }
+    }
+    function post() {
+      var req = new XMLHttpRequest();
+      req.onreadystatechange = function () {
+        if (!req || req.readyState !== 4) return;
+        var code = req.status, data = req.responseText, ct = req.getResponseHeader('Content-Type');
+        console.log(req);
+        req.onreadystatechange = null;
+        req = null;
+        var data;
+        if (json_re.test(ct)) {
+          try {
+            data = JSON.parse(data);
+          } catch (err) {
+            console.log("manglr: fetch ("+url+"): malformed JSON response:", err);
+            return retry(callback(code||500));
+          }
+        }
+        if (code < 300) {
+          if (callback(null, data) === "retry") retry();
+        } else {
+          retry(callback(code||500, data));
+        }
+      };
+      req.open('POST', location.protocol+'//'+location.host+url, true);
+      req.setRequestHeader("Content-Type", "application/json; charset=UTF-8");
+      req.send(JSON.stringify(data));
+    }
+  }
+
+  function dep_load_store_items(items_dep, state_dep, get_url) {
+    state_dep.value = 'loading'; mark_dirty(state_dep);
+    postJson(get_url, {}, function (code, data) {
+      if (code === 200) {
+        data = data.d || data || {}; // unwrap quirky json.
+        var items = null;
+        if (data instanceof Array) items = data;
+        else if (data['items'] instanceof Array) items = data['items']; // TODO: option (a path)
+        items_dep.value = items || []; mark_dirty(items_dep);
+        state_dep.value = 'ready'; mark_dirty(state_dep);
+      } else {
+        console.log("manglr: store fetch: "+get_url, code);
+        state_dep.value = 'error'; mark_dirty(state_dep);
+      }
+    });
+  }
+
+  function create_store(doc, parent, after, scope) {
+    var bind_as = sym_list[tpl[p++]];
+    var get_url = sym_list[tpl[p++]];
+    var auth_ref = sym_list[tpl[p++]];
+    console.log("> STORE "+bind_as);
+    var auth = new Model(bind_as);
+    scope.binds[bind_as] = auth;
+    var items_dep = { value:[], wait:0, fwd:[], dirty:false, name:'items' }; // dep.
+    var state_dep = { value:'loading', wait:0, fwd:[], dirty:false, name:'state' }; // dep.
+    auth._deps['items'] = items_dep;
+    auth._deps['state'] = state_dep;
+    dep_load_store_items(items_dep, state_dep, get_url);
+  }
+
   var dom_create = [
     create_text,       // 0
     create_bound_text, // 1
@@ -846,6 +917,7 @@
     create_repeat,     // 5
     create_router,     // 6  <router>
     create_auth,       // 7  <authentication>
+    create_store,      // 8  <store>
   ];
 
   function spawn_nodes(doc, parent, after, scope, capture) {
