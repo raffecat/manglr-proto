@@ -34,6 +34,6 @@
   },
   "homepage": "https://github.com/raffecat/manglr-proto#readme",
   "dependencies": {
-    "node-html-parser": "^1.1.9"
+    "he": "1.1.1"
   }
 }

@@ -1,4 +1,5 @@
 .DS_Store
 node_modules/
 demo/manglr.js
+demo/dash.js
 

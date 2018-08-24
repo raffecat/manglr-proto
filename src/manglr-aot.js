@@ -9,7 +9,7 @@ var directives = {}; // registry.
 var prefixes = {};   // registry.
 var mod_conds = {};  // registry.
 var prefixes_dirty = true;
-var root_component = { id:'c0', cid:0, tags:{}, tpl:[], tag:'$' };
+var root_component = { id:0, tpl:[], tags:{}, dom_node:null, tag:'$', parent:null };
 var components = { c0:root_component }; // index.
 var comp_list = [root_component];
 var bool_attr = "allowFullscreen|async|autofocus|autoplay|checked|compact|controls|declare|default|defaultChecked|defaultMuted|defaultSelected|defer|disabled|draggable|enabled|formNoValidate|hidden|indeterminate|inert|isMap|itemScope|loop|multiple|muted|noHref|noResize|noShade|noValidate|noWrap|open|pauseOnExit|readOnly|required|reversed|scoped|seamless|selected|sortable|spellcheck|translate|trueSpeed|typeMustMatch|visible";
@@ -19,7 +19,7 @@ for (var k, s=bool_attr.split('|'), i=0; i<s.length; i++) { k=s[i]; bool_map[k.t
 // ---- error reporting ----
 
 var error_msgs = [
-  'manglr-bind.js must be loaded first!',                                 // 0
+  '',                                                                     // 0
   'no handler registered for custom attribute "@"',                       // 1
   'error thrown in handler "@":',                                         // 2
   'no component found (in scope) for custom tag "@"',                     // 3
@@ -76,9 +76,8 @@ function encode_inline(tpl, contents) {
 
 function create_tpl(contents) {
   var cid = nextSid++;
-  var sid = 't'+cid;
   // looks like a component, but only 'tpl' is used for encoding.
-  var comp = { id:sid, cid:cid, tpl:contents };
+  var comp = { id:cid, tpl:contents };
   comp_list.push(comp);
   return cid;
 }
@@ -731,10 +730,8 @@ function parse_text_tpl_as_expr(text) {
 function parse_children(node, c_tags, comp_ctls) {
   // parse child nodes into their own tpl.
   var children = [];
-  var child = node.firstChild;
-  while (child != null) {
+  for (const child of node.childNodes) {
     parse_dom_node(child, c_tags, children, comp_ctls);
-    child = child.nextSibling;
   }
   return children;
 }
@@ -744,42 +741,38 @@ function parse_dom_node(node, c_tags, to_list, comp_ctls) {
   // note: one DOM node can yield multiple AST nodes! (e.g. body text placeholders)
   var nodeType = node.nodeType;
   if (nodeType == 1) { // Element.
-    var tag = node.nodeName.toLowerCase();
+    var tag = node.tagName.toLowerCase();
     if (tag === 'component' || tag === 'script') return; // elide from tpl.
     var tag_tpl = c_tags[tag];
     var proxy = new NodeProxy(node, tag_tpl);
     var attrs = node.attributes;
-    for (var i=0,n=attrs&&attrs.length; i<n; i++) {
-      var attr = attrs[i];
-      if (attr.specified) {
-        var name = attr.name;
-        var name_lc = name.toLowerCase();
-        var value = attr.value;
-        // check if the attribute name matches any registered directives.
-        var handler = directives[name_lc];
-        if (handler) {
-            handler(proxy, value, "");
-            continue; // next attribute.
-        }
-        // check if the attribute matches any registered prefix.
-        if (~name_lc.indexOf('-')) {
-          var m = name_lc.match(prefix_re);
-          if (m) {
-            var prefix = m[0];
-            var suffix = name.substr(prefix.length);
-            // custom binding handler.
-            var handler = prefixes[prefix];
-            handler(proxy, value, suffix);
-            continue; // next attribute.
-          } else {
-            // warn if the attribute is not a standard HTML attribute.
-            // TODO: use a database of standard HTML tags and their attributes.
-            if (!tag_tpl && !std_attr.test(name_lc)) error(node, 1, name);
-          }
-        }
-        // bind the attribute to the (text-template) expression.
-        proxy.bind_attr(name, proxy.text_tpl(value));
+    for (const name of Object.keys(attrs)) {
+      var value = attrs[name];
+      var name_lc = name.toLowerCase();
+      // check if the attribute name matches any registered directives.
+      var handler = directives[name_lc];
+      if (handler) {
+          handler(proxy, value, "");
+          continue; // next attribute.
       }
+      // check if the attribute matches any registered prefix.
+      if (~name_lc.indexOf('-')) {
+        var m = name_lc.match(prefix_re);
+        if (m) {
+          var prefix = m[0];
+          var suffix = name.substr(prefix.length);
+          // custom binding handler.
+          var handler = prefixes[prefix];
+          handler(proxy, value, suffix);
+          continue; // next attribute.
+        } else {
+          // warn if the attribute is not a standard HTML attribute.
+          // TODO: use a database of standard HTML tags and their attributes.
+          if (!tag_tpl && !std_attr.test(name_lc)) error(node, 1, name);
+        }
+      }
+      // bind the attribute to the (text-template) expression.
+      proxy.bind_attr(name, proxy.text_tpl(value));
     }
     var children = parse_children(node, c_tags, comp_ctls);
     proxy.add_children(children);
@@ -789,7 +782,7 @@ function parse_dom_node(node, c_tags, to_list, comp_ctls) {
     if (bi_comp) {
       out_node = bi_comp(node, proxy, comp_ctls);
     } else if (tag_tpl) {
-      out_node = new DomComponent(tag_tpl.tag, tag_tpl.cid, proxy._binds, proxy._children);
+      out_node = new DomComponent(tag_tpl.tag, tag_tpl.id, proxy._binds, proxy._children);
     } else {
       // HTML element.
       if (~tag.indexOf('-')) error(node, 3, tag); // debugging: report custom tag names if not a component.
@@ -811,7 +804,7 @@ function parse_dom_node(node, c_tags, to_list, comp_ctls) {
     }
   } else if (nodeType == 3) { // Text.
     // node.data: CharacterData, DOM level 1.
-    var nodes = parse_text_tpl(node.data);
+    var nodes = parse_text_tpl(node.text);
     for (var node of nodes) {
       if (node instanceof ConstText) {
         // re-wrap the text in a literal dom text node.
@@ -824,79 +817,78 @@ function parse_dom_node(node, c_tags, to_list, comp_ctls) {
   }
 }
 
-function find_components(top) {
-  // NB. `top` cannot be a component itself.
-  var comp_nodes = top.getElementsByTagName('component');
-  var found = [];
-  // in-order traversal: parents are processed before their children,
-  // therefore we can always find the parent component by id in `components`.
-  for (var i=0,n=comp_nodes.length; i<n; i++) {
-    var node = comp_nodes[i];
-    // assign each component a unique id.
-    var cid = nextSid++;
-    var sid = 'c'+cid;
-    node.manglr_sid = sid;
-    // index components so we can find parent components.
-    var tag = node.getAttribute('tag') || error(node, 8, ''); // missing attribute.
-    var comp = { id:sid, cid:cid, tpl:[], tags:{}, node:node, tag:tag };
-    components[sid] = comp;
-    comp_list.push(comp);
-    found.push(comp);
-    // find the enclosing component - will already be in `components`.
-    var parent = node.parentNode;
-    var into = root_component; // enclosing component if none found.
-    while (parent !== top) {
-      if (parent.nodeName.toLowerCase() === 'component') {
-        // found the enclosing component.
-        var pid = parent.manglr_sid || error(parent, 7, ''); // missing id on parent.
-        into = pid ? (components[pid] || error(parent, 6, pid)) : null; // id not in registry.
-        break;
+function find_components(node, found, parent_comp) {
+  // walk the dom tree to find all <component> tags.
+  // must do this first because they can define custom tag names.
+  for (const child of node.childNodes) {
+    if (child.nodeType === 1) {
+      if (child.tagName === 'component') {
+        // assign each component a unique id.
+        const cid = nextSid++;
+        const tag = child.attributes['tag'] || error(child, 8, ''); // missing attribute.
+        const comp = { id:cid, tpl:[], tags:{}, dom_node:child, tag:tag, parent:parent_comp };
+        comp_list.push(comp);
+        found.push(comp);
+        if (tag) {
+          // register the component in its parent by custom-tag name.
+          const tag_set = parent_comp.tags;
+          if (hasOwn.call(tag_set, tag)) error(node, 9, tag); // duplicate name.
+          else tag_set[tag] = comp;
+        }
+        // find all components defined inside this component.
+        find_components(child, found, comp);
+      } else {
+        find_components(child, found, parent_comp);
       }
-      parent = parent.parentNode;
-    }
-    if (tag && into) {
-      // register the component in its parent by custom-tag name.
-      var tag_set = into.tags;
-      if (hasOwn.call(tag_set, tag)) error(node, 9, tag); // duplicate name.
-      else tag_set[tag] = comp;
-      comp.parent = into;
     }
   }
+}
+
+function parse_components(found) {
   // in-order traversal: parents are processed before their children,
   // therefore c_tags will hoist all ancestor tags as well.
-  for (var i=0; i<found.length; i++) {
-    var comp = found[i];
-    var node = comp.node;
-    comp.node = null; // GC.
+  for (const comp of found) {
+    const node = comp.dom_node; comp.dom_node = null; // GC.
     // hoist `tags` from the parent (includes `tags` from all ancestors)
-    var c_tags = comp.tags; // NB. mutated! (hoisted tags are added)
-    var parent = comp.parent;
+    const c_tags = comp.tags; // NB. mutated! (hoisted tags are added)
+    const parent = comp.parent;
     if (parent) {
-      var up_tags = parent.tags;
-      for (var k in up_tags) {
-        if (hasOwn.call(up_tags, k)) {
-          if (c_tags[k]) error(node, 11, k); // component tag shadows another component.
-          else c_tags[k] = up_tags[k];
-        }
+      const up_tags = parent.tags;
+      for (const k of Object.keys(up_tags)) {
+        if (c_tags[k]) error(node, 11, k); // component tag shadows another component.
+        else c_tags[k] = up_tags[k];
       }
     }
     // parse dom nodes to create a template for spawning.
-    var comp_ctls = []; // controller instances inside this component.
-    var comp_els = parse_children(node, c_tags, comp_ctls);
+    const comp_ctls = []; // controller instances inside this component.
+    const comp_els = parse_children(node, c_tags, comp_ctls);
     comp.tpl = comp_ctls.concat(comp_els);
     log("[ COMPONENT:", comp.tag, comp.tpl);
+  }
+}
+
+function find_body(node) {
+  for (const child of node.childNodes) {
+    if (child.nodeType === 1) {
+      if (child.tagName === 'body') {
+        return child;
+      } else {
+        const b = find_body(child);
+        if (b) return b;
+      }
+    }
   }
 }
 
 function parse_document(doc) {
   // update the attribute prefix regex if register_prefix has been called.
   if (prefixes_dirty) rebuild_prefixes();
-  // must find all component tags first, since they affect walk_dom.
-  find_components(doc);
-  // parse the remaining document body into the root component.
-  var root_ctls = []; // controller instances inside this component.
-  var root_els = parse_children(document.body, root_component.tags, root_ctls);
-  root_component.tpl = root_ctls.concat(root_els);
+  // must find all component tags first, since they define custom tags.
+  root_component.dom_node = find_body(doc);
+  var found = [root_component];
+  find_components(doc, found, root_component);
+  // now parse the dom elements in each component.
+  parse_components(found);
   // encode all templates for the runtime.
   var encoded = [];
   for (var i=0; i<comp_list.length; i++) {
@@ -910,10 +902,8 @@ function parse_document(doc) {
       tpl[n].encode(encoded);
     }
   }
-  var payload = [encoded, sym_list];
-  log("payload:", payload);
-  log(JSON.stringify(payload));
-  return payload;
+  const blob = 'manglr('+JSON.stringify(encoded)+','+JSON.stringify(sym_list)+');';
+  return blob;
 }
 
 // ---- registration ----

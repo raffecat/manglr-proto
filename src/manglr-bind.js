@@ -2,7 +2,7 @@ var debug = true;
 var log_expr = true;
 var log_spawn = false;
 var log_deps = true;
-(function(manglr, Node, Array, Object, Error){
+(function(Node, Array, Object, Error){
   "use strict";
 
   var hasOwn = Object['prototype']['hasOwnProperty'];
@@ -972,12 +972,18 @@ var log_deps = true;
 
   // -+-+-+-+-+-+-+-+-+ Init -+-+-+-+-+-+-+-+-+
 
-  manglr['bind_doc'] = function (doc, payload) {
-    tpl = payload[0];
-    sym_list = payload[1];
+  function load_app() {
+    var doc = document;
     var root_scope = Scope(null, null);
     if (debug) console.log(root_scope); // DEBUGGING.
     spawn_tpl(doc, doc.body, null, 0, root_scope, null);
+  }
+
+  window['manglr'] = function (in_tpl, in_sym_list) {
+    tpl = in_tpl;
+    sym_list = in_sym_list;
+    // setTimeout(load_app, 0);
+    load_app();
   };
 
-})(manglr, Node, Array, Object, Error);
+})(Node, Array, Object, Error);
