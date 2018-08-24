@@ -7,6 +7,7 @@
     <meta name="description" content="">
     <meta name="author" content="">
     <link rel="icon" href="/favicon.ico">
+    <meta http-equiv="refresh" content="86400">
 
     <title>Dashboard</title>
 
@@ -50,11 +51,11 @@
     </component>
 
     <component tag="orders-page">
-      <store id="orders" get="/api/orders" auth="@login" poll="30s" cache="30s" save="patch"></store>
+      <store id="orders" get="/api/orders.json" auth="@login" poll="30s" cache="30s" save="patch"></store>
 
       <div class="row">
         <div class="orders-leftcol">
-          Left Col
+          <div class="alert alert-danger" role="alert" if="orders.error">Problem loading orders. <button type="button" class="btn btn-secondary btn-sm" action="orders.reload">retry</button></div>
           <div repeat="order from orders" class="order" class-test-order="not order.is_live" menu-option="order-menu with order">
             <div class="ol-number">{ order.number }</div>
             <div class="ol-name">{ order.name }</div>
@@ -63,7 +64,6 @@
         </div>
 
         <div class="orders-rightcol">
-          Right Col
           <div menu-display="order-menu as order" class="order-detail" class-test-order="not order.is_live">
             <div class="od-number">{ order.number }</div>
             <div class="od-name">{ order.name }</div>

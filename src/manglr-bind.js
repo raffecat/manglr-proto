@@ -779,7 +779,7 @@
         rep_scope.dom['push'](inst_scope);
         // NB. new scope adds itself to rep_scope.inner.
       }
-      after = inner;
+      after = inst_scope;
     }
     // destroy all unused inner-scopes.
     for (var key in has) {
@@ -866,7 +866,7 @@
           }
         }
         if (code < 300) {
-          if (callback(null, data) === "retry") retry();
+          if (callback(code, data) === "retry") retry();
         } else {
           retry(callback(code||500, data));
         }
@@ -877,19 +877,34 @@
     }
   }
 
-  function dep_load_store_items(items_dep, state_dep, get_url) {
-    state_dep.value = 'loading'; mark_dirty(state_dep);
+  function store_set_state(store, state) {
+    store.state = state;
+    var deps = store._deps;
+    var loading = (state === 'loading');
+    var error = (state === 'error');
+    var loaded = (state === 'loaded');
+    if (deps.loading.value !== loading) { deps.loading.value = loading; mark_dirty(deps.loading); }
+    if (deps.error.value !== error) { deps.error.value = error; mark_dirty(deps.error); }
+    if (deps.loaded.value !== loaded) { deps.loaded.value = loaded; mark_dirty(deps.loaded); }
+  }
+
+  function dep_load_store_items(store, get_url, items_dep) {
+    store_set_state(store, 'loading');
     postJson(get_url, {}, function (code, data) {
-      if (code === 200) {
+      console.log("manglr: store fetch: "+get_url, code, data);
+      if (code === 200 && data) {
         data = data.d || data || {}; // unwrap quirky json.
         var items = null;
         if (data instanceof Array) items = data;
         else if (data['items'] instanceof Array) items = data['items']; // TODO: option (a path)
-        items_dep.value = items || []; mark_dirty(items_dep);
-        state_dep.value = 'ready'; mark_dirty(state_dep);
+        if (items) {
+          items_dep.value = items || []; mark_dirty(items_dep);
+          store_set_state(store, 'loaded');
+        } else {
+          store_set_state(store, 'error');
+        }
       } else {
-        console.log("manglr: store fetch: "+get_url, code);
-        state_dep.value = 'error'; mark_dirty(state_dep);
+        store_set_state(store, 'error');
       }
     });
   }
@@ -899,13 +914,16 @@
     var get_url = sym_list[tpl[p++]];
     var auth_ref = sym_list[tpl[p++]];
     console.log("> STORE "+bind_as);
-    var auth = new Model(bind_as);
-    scope.binds[bind_as] = auth;
-    var items_dep = { value:[], wait:0, fwd:[], dirty:false, name:'items' }; // dep.
-    var state_dep = { value:'loading', wait:0, fwd:[], dirty:false, name:'state' }; // dep.
-    auth._deps['items'] = items_dep;
-    auth._deps['state'] = state_dep;
-    dep_load_store_items(items_dep, state_dep, get_url);
+    var store = new Model(bind_as);
+    var deps = store._deps;
+    store.state = 'loading';
+    scope.binds[bind_as] = store;
+    var items_dep = { value:[], wait:0, fwd:[], dirty:false, name:'store.items' }; // dep.
+    deps['items'] = items_dep;
+    deps['loading'] = { value:true, wait:0, fwd:[], dirty:false, name:'store.loading' }; // dep.
+    deps['error'] = { value:false, wait:0, fwd:[], dirty:false, name:'store.error' }; // dep.
+    deps['loaded'] = { value:false, wait:0, fwd:[], dirty:false, name:'store.loaded' }; // dep.
+    dep_load_store_items(store, get_url, items_dep);
   }
 
   var dom_create = [
