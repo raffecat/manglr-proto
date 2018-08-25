@@ -121,7 +121,6 @@ body {
   overflow-y: auto; /* Scrollable contents if viewport is shorter than content. */
   background-color: #656463;
   border-right: 1px solid #eee;
-  padding: 15px;
 }
 
 .orders-rightcol {
@@ -133,7 +132,37 @@ body {
   overflow-x: hidden;
   overflow-y: auto; /* Scrollable contents if viewport is shorter than content. */
   background-color: #c5c4c3;
-  padding: 15px;
+}
+
+.order {
+  position: relative;
+  padding: 10px 0;
+  background: #c5c4c3;
+  border: 1px solid #d5d4d3;
+  margin: 5px;
+  font-size: 16pt;
+}
+.order:after {
+  display: table;
+  content: " ";
+  clear: both;
+}
+.order .ol-number {
+  position: absolute;
+  left: 15px; top: 10px; width: 30px; height: 30px;
+  border-radius: 15px;
+  text-align: center;
+  color: #222;
+  font-size: 20px;
+  border: 1px solid #222;
+}
+.order .ol-name {
+  margin-left: 60px;
+}
+.order .ol-due {
+  position: absolute;
+  top: 12px;
+  left: 300px;
 }
 
 /*
