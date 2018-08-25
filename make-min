@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# uglifyjs --config-file uglify.conf src/manglr-bind.js >demo/manglr.js
-uglifyjs --define 'debug=0,log_expr=0,log_spawn=0,log_deps=0' --toplevel --comments '/^\/*\s</' --mangle-props keep_quoted --mangle 'reserved=[debug,log_expr,log_spawn,log_deps]' --ie8 --compress 'hoist_funs=true,reduce_funcs=false,inline=false,typeofs=false' src/manglr-bind.js >demo/manglr.js
-# --warn 

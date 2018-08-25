@@ -1,2 +1,4 @@
 #!/usr/bin/env bash
-./bin/manglr demo/dashboard.html demo/dash.html
+mkdir -p dist
+rm -f dist/dash.html
+./bin/manglr demo/dashboard.html dist/dash.html

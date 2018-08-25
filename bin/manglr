@@ -3,7 +3,7 @@
 const fs = require('fs');
 const parser = require('../third-party/node-html-parser');
 const compiler = require('../src/manglr-aot');
-const manglr_rtl = fs.readFileSync(__dirname+'/../demo/manglr.js', 'utf8');
+const manglr_rtl = fs.readFileSync(__dirname+'/../dist/manglr.js', 'utf8');
 
 const in_file = process.argv[2];
 const out_file = process.argv[3];
