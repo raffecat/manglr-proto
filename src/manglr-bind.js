@@ -430,7 +430,6 @@ var log_deps = true;
     // expr_div,
   ];
 
-  /* @inline */
   function resolve_expr(scope) {
     return expr_ops[tpl[p++]](scope);
   }
@@ -1013,13 +1012,12 @@ var log_deps = true;
     spawn_tpl(doc, doc.body, null, 1, root_scope, null);
   }
 
-  window['manglr'] = function (payload) {
-    tpl = b93_decode(payload[0]); // unpack tpl data to an array of integers.
-    payload[0] = ''; // drop ref to the tpl string so it can be GC'd.
+  window['manglr'] = function (tpl_data, symbols) {
+    sym_list = symbols;
+    tpl = b93_decode(tpl_data); // unpack tpl data to an array of integers.
     for (var i=2, num=tpl[0]; i<=num; i++) {
       tpl[i] += tpl[i-1]; // make template offsets absolute (encoded relative)
     }
-    sym_list = payload;
     load_app();
   };
 
