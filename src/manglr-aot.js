@@ -1,24 +1,30 @@
 "use strict";
 
-var std_attr = new RegExp("^accept-charset$|^http-equiv$|^data-|^aria-");
-var prefix_re;
-var hasOwn = Object.prototype.hasOwnProperty;
-var nextSid = 1;
-var builtins = {};   // registry.
-var directives = {}; // registry.
-var prefixes = {};   // registry.
-var mod_conds = {};  // registry.
+const html_parser = require('../third-party/node-html-parser');
+const std_attr = new RegExp("^accept-charset$|^http-equiv$|^data-|^aria-");
+const hasOwn = Object.prototype.hasOwnProperty;
+const builtins = {};   // registry.
+const directives = {}; // registry.
+const prefixes = {};   // registry.
+const mod_conds = {};  // registry.
+var prefix_re = null;
+var next_tpl_id = 2; // 0 = empty template, 1 = root template.
 var prefixes_dirty = true;
-var root_component = { id:0, tpl:[], tags:{}, dom_node:null, tag:'$', parent:null };
-var components = { c0:root_component }; // index.
-var comp_list = [root_component];
-var bool_attr = "allowFullscreen|async|autofocus|autoplay|checked|compact|controls|declare|default|defaultChecked|defaultMuted|defaultSelected|defer|disabled|draggable|enabled|formNoValidate|hidden|indeterminate|inert|isMap|itemScope|loop|multiple|muted|noHref|noResize|noShade|noValidate|noWrap|open|pauseOnExit|readOnly|required|reversed|scoped|seamless|selected|sortable|spellcheck|translate|trueSpeed|typeMustMatch|visible";
-var bool_map = {};
+const root_component = { id:1, tpl:[], tags:{}, dom_node:null, tag:'$', parent:null };
+const comp_list = [root_component];
+const bool_attr = "allowFullscreen|async|autofocus|autoplay|checked|compact|controls|declare|default|defaultChecked|defaultMuted|defaultSelected|defer|disabled|draggable|enabled|formNoValidate|hidden|indeterminate|inert|isMap|itemScope|loop|multiple|muted|noHref|noResize|noShade|noValidate|noWrap|open|pauseOnExit|readOnly|required|reversed|scoped|seamless|selected|sortable|spellcheck|translate|trueSpeed|typeMustMatch|visible";
+const bool_map = {};
 for (var k, s=bool_attr.split('|'), i=0; i<s.length; i++) { k=s[i]; bool_map[k.toLowerCase()]=k; }
+
+// ---- build dom ----
+
+function parse_html(source) {
+  return html_parser.parse(source, {script:true, noscript:true, style:true, pre:true});
+}
 
 // ---- error reporting ----
 
-var error_msgs = [
+const error_msgs = [
   '',                                                                     // 0
   'no handler registered for custom attribute "@"',                       // 1
   'error thrown in handler "@":',                                         // 2
@@ -39,7 +45,7 @@ var error_msgs = [
   'component "@" cannot have any child elements',                         // 17
 ];
 
-var log = console.log;
+const log = console.log;
 
 function error(node, n, name, err) {
   console.log('manglr: '+(error_msgs[n]||n).replace(/@/g,name), node, err);
@@ -48,8 +54,8 @@ function error(node, n, name, err) {
 
 // ---- Encoder Symbol Table ----
 
-var sym_list = [];
-var sym_map = new Map();
+const sym_list = [""];
+const sym_map = new Map();
 
 function sym(name) {
   // look up or register a new symbol.
@@ -66,20 +72,13 @@ function sym(name) {
 // first build AST nodes describing the tree to compile (plugins can contribute)
 // then encode those nodes, resolving tag names and scope names during traversal.
 
-function encode_inline(tpl, contents) {
-  // encode an inline template with its size as prefix.
-  var patch = tpl.length; tpl.push(0); // patch-pos for size of tpl.
-  tpl.push(contents.length);
-  contents.forEach(n => n.encode(tpl)); // apply encode(tpl) over contents.
-  tpl[patch] = tpl.length - patch; // size of inline tpl.
-}
-
 function create_tpl(contents) {
-  var cid = nextSid++;
+  if (!contents.length) return 0; // the empty template.
+  var tpl_id = next_tpl_id++;
   // looks like a component, but only 'tpl' is used for encoding.
-  var comp = { id:cid, tpl:contents };
+  var comp = { id:tpl_id, tpl:contents };
   comp_list.push(comp);
-  return cid;
+  return tpl_id;
 }
 
 function encode_named_nodes(tpl, binds) {
@@ -98,7 +97,7 @@ function encode_named_nodes(tpl, binds) {
   }
 }
 
-var dom_ops = {
+const dom_ops = {
   text:            0,
   bound_text:      1,
   tag:             2,
@@ -144,15 +143,14 @@ function DomComponent(name, cid, binds, contents) {
   this.name = name;
   this.cid = cid;
   this.binds = binds;
-  this.contents = contents;
+  this.content_tpl = create_tpl(contents); // must reserve tpl slot before encoding begins.
 }
 DomComponent.prototype.encode = function (tpl) {
   // need to resolve components before encode to determine which ones are used?
   // var comp = scope.c_tags[this.name];
   // if (!comp) error(this.node, 'no component found (in scope) for custom tag "'+this.name+'"');
-  tpl.push(dom_ops.component, this.cid);
+  tpl.push(dom_ops.component, this.cid, this.content_tpl);
   encode_named_nodes(tpl, this.binds);
-  encode_inline(tpl, this.contents);
 };
 
 function CondNode(expr, contents) {
@@ -200,7 +198,7 @@ StoreNode.prototype.encode = function (tpl) {
 
 // ---- Attribute AST Nodes ----
 
-var attr_ops = {
+const attr_ops = {
   literal_text:      0,
   literal_bool:      1,
   bound_text:        2,
@@ -283,7 +281,7 @@ BoundStyle.prototype.encode = function (tpl) {
 
 // ---- Expression AST Nodes ----
 
-var expr_ops = {
+const expr_ops = {
   const_text:     0,
   const_num:      1,
   scope_lookup:   2,
@@ -638,16 +636,16 @@ function rebuild_prefixes() {
   prefix_re = new RegExp(res.join('|'))
 }
 
-var tpl_re = new RegExp("([^{]*){?([^}]*)}?", "y");
-var mod_con_re = new RegExp("\\s*([A-Za-z][-A-Za-z0-9_]*):\\s*(.*)", "y"); // "cond-name: (expr)"
-var expr_re = new RegExp("\\s*(?:([@A-Za-z][A-Za-z0-9_.]*)|(\\+|\\-|\\*|\\/)|(.))", "y"); // (?:\\.\\w[\\w\\d_]*)*
-var norm_re = new RegExp("\\s+", "g")
+const tpl_re = new RegExp("([^{]*){?([^}]*)}?", "y");
+const mod_con_re = new RegExp("\\s*([A-Za-z][-A-Za-z0-9_]*):\\s*(.*)", "y"); // "cond-name: (expr)"
+const expr_re = new RegExp("\\s*(?:([@A-Za-z][A-Za-z0-9_.]*)|(\\+|\\-|\\*|\\/)|(.))", "y"); // (?:\\.\\w[\\w\\d_]*)*
+const norm_re = new RegExp("\\s+", "g")
 
 function norm_ws(text) {
   return text.replace(norm_re, " ");
 }
 
-var dy_ops = {
+const dy_ops = {
   '+': AddOp,
   '-': SubOp,
   '*': MulOp,
@@ -824,9 +822,9 @@ function find_components(node, found, parent_comp) {
     if (child.nodeType === 1) {
       if (child.tagName === 'component') {
         // assign each component a unique id.
-        const cid = nextSid++;
+        const tpl_id = next_tpl_id++;
         const tag = child.attributes['tag'] || error(child, 8, ''); // missing attribute.
-        const comp = { id:cid, tpl:[], tags:{}, dom_node:child, tag:tag, parent:parent_comp };
+        const comp = { id:tpl_id, tpl:[], tags:{}, dom_node:child, tag:tag, parent:parent_comp };
         comp_list.push(comp);
         found.push(comp);
         if (tag) {
@@ -880,49 +878,96 @@ function find_body(node) {
   }
 }
 
-function parse_document(doc) {
+function b93_encode(nums) {
+  // encode an array of small positive integers as ascii (single-byte) characters.
+  // avoid for javascript: 34 " 92 \ 127 [delete]
+  const res = [];
+  for (const num of nums) {
+    if (num < 0) throw "cannot b93_encode: "+num;
+    // use ascii 32..94 (excluding 34, 92) to encode the least significant 61 values.
+    var ch = 32 + (num % 61);
+    if (ch >= 34) ++ch;
+    if (ch >= 92) ++ch;
+    var s = String.fromCharCode(ch);
+    // var s = b93_set[num % 61];
+    var acc = (num / 61) | 0;
+    while (acc) {
+      // encode 5 bits at a time, prepending higher bits to the result.
+      // s = b93_set[61 + (acc & 31)] + s; // prepend 5-bit char (95..126)
+      s = String.fromCharCode(95 + (acc & 31)) + s;
+      acc = acc >> 5; // remaining high bits.
+    }
+    //console.log('\\'+s+'\\');
+    res.push(s);
+  }
+  return res.join('');
+}
+
+function b93_decode(text) {
+  var res = [], len = text.length, i = 0, acc = 0, ch;
+  for (;i<len;i++) {
+    ch = text.charCodeAt(i);
+    if (ch >= 95) {
+      acc = (acc << 5) + (ch - 95); // high 5 bits.
+    } else {
+      if (ch > 92) --ch;
+      if (ch > 34) --ch;
+      res.push((acc * 61) + (ch - 32)); // low 61 vals.
+      acc = 0;
+    }
+  }
+  return res;
+}
+
+function compile(source, manglr_rtl) {
+  const doc_el = parse_html(source);
+  const html = doc_el.firstChild; // <html>
   // update the attribute prefix regex if register_prefix has been called.
   if (prefixes_dirty) rebuild_prefixes();
   // must find all component tags first, since they define custom tags.
-  root_component.dom_node = find_body(doc);
+  const body = find_body(html);
+  root_component.dom_node = body;
   var found = [root_component];
-  find_components(doc, found, root_component);
+  find_components(body, found, root_component);
   // now parse the dom elements in each component.
   parse_components(found);
   // encode all templates for the runtime.
-  var encoded = [];
+  var encoded = [comp_list.length]; // number of templates.
   for (var i=0; i<comp_list.length; i++) {
-    encoded.push(0); // placeholder for tpl offset.
+    encoded.push(0); // placeholder for template offset.
   }
+  var prev_ofs = 0;
   for (var i=0; i<comp_list.length; i++) {
-    encoded[i] = encoded.length;
+    encoded[1+i] = encoded.length - prev_ofs; // offset relative to previous template.
+    prev_ofs = encoded.length; // save offset of previous template.
     var tpl = comp_list[i].tpl;
     encoded.push(tpl.length); // number of nodes.
     for (var n=0; n<tpl.length; n++) {
       tpl[n].encode(encoded);
     }
   }
-  const blob = 'manglr('+JSON.stringify(encoded)+','+JSON.stringify(sym_list)+');';
-  return blob;
+  // encode the tpl data as text.
+  const js_enc = JSON.stringify(encoded);
+  console.log("=>", js_enc);
+  const tpl_data = b93_encode(encoded);
+  console.log("=>", JSON.stringify(tpl_data));
+  console.log("=>", tpl_data.length, 'vs', js_enc.length, (tpl_data.length / js_enc.length * 100).toFixed(1)+'%');
+  const enc_check = b93_decode(tpl_data);
+  if (encoded.length !== enc_check.length) throw 8;
+  for (let x=0; x<encoded.length; x++) if (encoded[x] !== enc_check[x]) throw 9;
+  // remove all children from the body and add scripts.
+  body.set_content([]);
+  html.removeWhitespace();
+  // inject the manglr runtime and encoded blob.
+  sym_list[0] = tpl_data;
+  const blob = 'manglr('+JSON.stringify(sym_list)+');';
+  const script_doc = parse_html(`<script>\n${manglr_rtl}${blob}\n</script>`);
+  body.set_content(script_doc.childNodes);
+  return '<!DOCTYPE html>\n' + html.outerHTML;
 }
 
-// ---- registration ----
-
-function register(name, handler, set, n) {
-  var d = document;
-  if (set[name]) error(d, n, name);
-  else set[name] = handler;
-}
-
-// ---- manglr global ----
+// ---- exports ----
 
 module.exports = {
-  compile: parse_document,
-  directive: function (name, handler) {
-    register(name, handler, directives, 4);
-  },
-  prefix: function (name, handler) {
-    register(name, handler, prefixes, 5);
-    prefixes_dirty = true;
-  }
+  compile: compile
 };

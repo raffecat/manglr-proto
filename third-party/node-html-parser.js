@@ -3,7 +3,9 @@
 /* 
  *  https://github.com/taoqf/node-fast-html-parser
  *  License MIT
- *  Version 1.1.9 - MODIFIED - kMarkupPattern to allow multiple dashes.
+ *  Version 1.1.9a - MODIFIED
+ *  - kMarkupPattern to allow multiple dashes.
+ *  - toString to use HTML5 rules (no solidus on void elements)
  */
 
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -172,14 +174,12 @@ class HTMLElement extends Node {
     toString() {
         const tag = this.tagName;
         if (tag) {
-            const is_un_closed = /^meta$/i.test(tag);
-            const is_self_closed = /^(img|br|hr|area|base|input|doctype|link)$/i.test(tag);
+            // Modified to use HTML5 rules (no solidus on void elements)
+            // https://www.w3.org/TR/html5/syntax.html#start-tags
+            const is_void_el = /^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/i.test(tag);
             const attrs = this.rawAttrs ? ' ' + this.rawAttrs : '';
-            if (is_un_closed) {
+            if (is_void_el) {
                 return `<${tag}${attrs}>`;
-            }
-            else if (is_self_closed) {
-                return `<${tag}${attrs} />`;
             }
             else {
                 return `<${tag}${attrs}>${this.innerHTML}</${tag}>`;

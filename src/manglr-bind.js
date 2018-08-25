@@ -1,4 +1,4 @@
-/* <^> Manglr 0.1 | by Andrew Towers | MIT License | https://github.com/raffecat/manglr-proto */
+/* <~> Manglr 0.2 | by Andrew Towers | MIT License | https://github.com/raffecat/manglr-proto */
 
 var debug = true;
 var log_expr = true;
@@ -11,7 +11,6 @@ var log_deps = true;
   var hasOwn = Object['prototype']['hasOwnProperty'];
   var nextSid = 1;
   var null_dep = { val:null, wait:-1 }; // dep.
-  var is_text = { "boolean":1, "number":1, "string":1, "symbol":1, "undefined":0, "object":0, "function":0 };
   var json_re = new RegExp("^application\/json", "i");
   var sym_list; // Array: symbol strings.
   var tpl; // Array: encoded templates.
@@ -321,7 +320,7 @@ var log_deps = true;
     }
   }
 
-  function resolve_in_scope(scope) {
+  function expr_scope_lookup(scope) {
     // This operation combines scope lookup and one or more dependent field lookups.
     // TODO: Consider splitting these up into separate expression ops.
     var len = tpl[p]; p += 1;
@@ -357,18 +356,22 @@ var log_deps = true;
     return dep;
   }
 
+  function to_text(val) {
+    return (val == null || val instanceof Object) ? '' : (''+val);
+  }
+
   function dep_upd_concat(dep) {
     // concatenate text fragments from each input dep.
     var args = dep.args;
     var text = "";
     for (var i=0; i<args['length']; i++) {
       var val = args[i].val;
-      text += is_text[typeof(val)] ? val : "";
+      text += to_text(val);
     }
     dep.val = text;
   }
 
-  function resolve_concat(scope) {
+  function expr_concat_text(scope) {
     // create a dep that updates after all arguments have updated.
     var args = [];
     var dep = { val:"", wait:0, fwd:[], fn:dep_upd_concat, args:args }; // dep.
@@ -389,7 +392,7 @@ var log_deps = true;
     dep.val = (dep.lhs.val === dep.rhs.val);
   }
 
-  function resolve_equals(scope) {
+  function expr_equals(scope) {
     // create a dep that updates after both arguments have updated.
     var left = resolve_expr(scope);
     var right = resolve_expr(scope);
@@ -403,31 +406,33 @@ var log_deps = true;
     return dep;
   }
 
+  function expr_const_text() {
+    var val = sym_list[tpl[p++]];
+    if (log_expr) console.log("[e] const text: "+val);
+    return { val: val, wait: -1 }; // dep.
+  }
+
+  function expr_const_num() {
+    var val = tpl[p++];
+    if (log_expr) console.log("[e] const number: "+val);
+    return { val: val, wait: -1 }; // dep.
+  }
+
+  var expr_ops = [
+    expr_const_text,
+    expr_const_num,
+    expr_scope_lookup,
+    expr_concat_text,
+    expr_equals,
+    // expr_add,
+    // expr_sub,
+    // expr_mul,
+    // expr_div,
+  ];
+
+  /* @inline */
   function resolve_expr(scope) {
-    var dep;
-    switch (tpl[p++]) {
-      case 0: // const_text.
-        dep = { val: sym_list[tpl[p++]], wait: -1 }; // dep.
-        if (log_expr) console.log("[e] const text: "+dep.val);
-        break;
-      case 1: // const_number.
-        dep = { val: tpl[p++], wait: -1 }; // dep.
-        if (log_expr) console.log("[e] const number: "+dep.val);
-        break;
-      case 2: // scope_lookup.
-        dep = resolve_in_scope(scope);
-        break;
-      case 3: // concat_text.
-        dep = resolve_concat(scope);
-        break;
-      case 4: // equals.
-        dep = resolve_equals(scope);
-        break;
-      default:
-        // can't recover from encoding errors.
-        throw 1; // new Error("bad expression op: "+tpl[p]+" at "+p);
-    }
-    return dep;
+    return expr_ops[tpl[p++]](scope);
   }
 
 
@@ -476,7 +481,7 @@ var log_deps = true;
   function dep_upd_text_node(dep) {
     // update a DOM Text node from an input dep's value.
     var val = dep.src_dep.val;
-    dep.node.data = is_text[typeof(val)] ? val : '';
+    dep.node.data = to_text(val);
   }
 
   function create_bound_text(doc, parent, after, scope) {
@@ -487,7 +492,7 @@ var log_deps = true;
       // constant value.
       // inline version of dep_upd_text_node.
       var val = dep.val;
-      node.data = is_text[typeof(val)] ? val : '';
+      node.data = to_text(val);
     } else {
       // varying value.
       var watch = { val:'', wait:0, fwd:[], fn:dep_upd_text_node, node:node, src_dep:dep }; // dep.
@@ -506,7 +511,7 @@ var log_deps = true;
     if (val == null) { // or undefined.
       node['removeAttribute'](name); // is this actually a feature we need?
     } else {
-      node['setAttribute'](name, is_text[typeof(val)] ? val : '');
+      node['setAttribute'](name, to_text(val));
     }
   }
 
@@ -556,7 +561,7 @@ var log_deps = true;
   function dep_upd_bound_classes(dep) {
     // bound text expr can contain any number of classes.
     var val = dep.src_dep.val;
-    var classes = is_text[typeof(val)] ? (''+val) : '';
+    var classes = to_text(val);
     var old_val = dep.old_val;
     if (classes !== old_val) {
       dep.old_val = classes;
@@ -580,6 +585,108 @@ var log_deps = true;
     (is_true(dep.src_dep.val) ? add_class : remove_class)(dep.node, dep.cls_name);
   }
 
+  function attr_literal_text(node) {
+    if (log_spawn) console.log("[a] literal text: "+sym_list[tpl[p+1]]+" = "+sym_list[tpl[p+2]]);
+    node['setAttribute'](sym_list[tpl[p+1]], sym_list[tpl[p+2]]);
+    p += 3;
+  }
+
+  function attr_literal_bool(node) {
+    if (log_spawn) console.log("[a] set boolean: "+sym_list[tpl[p+1]]+" = "+sym_list[tpl[p+2]]);
+    node[sym_list[tpl[p+1]]] = !! tpl[p+2]; // cast to bool.
+    p += 3;
+  }
+
+  function attr_bound_text(node, scope) {
+    // bound text attribute.
+    var name = sym_list[tpl[p+1]];
+    if (log_spawn) console.log("[a] bound text: "+sym_list[tpl[p+1]]);
+    p += 2;
+    var dep = resolve_expr(scope);
+    if (dep.wait<0) {
+      // constant value.
+      var val = dep.val;
+      if (val != null) { // or undefined.
+        node['setAttribute'](name, to_text(val));
+      }
+    } else {
+      // varying value.
+      var watch = { val:null, wait:0, fwd:[], fn:dep_upd_text_attr, node:node, src_dep:dep, attr_name:name }; // dep.
+      dep.fwd['push'](watch);
+      dep_upd_text_attr(watch); // update now.
+    }
+  }
+
+  function attr_bound_bool(node, scope) {
+    // bound boolean attribute.
+    var name = sym_list[tpl[p+1]];
+    if (log_spawn) console.log("[a] bound boolean: "+sym_list[tpl[p+1]]);
+    p += 2;
+    var dep = resolve_expr(scope);
+    if (dep.wait<0) {
+      // constant value.
+      node[name] = !! is_true(dep.val); // cast to bool.
+    } else {
+      // varying value.
+      var watch = { val:null, wait:0, fwd:[], fn:dep_upd_bool_attr, node:node, src_dep:dep, attr_name:name }; // dep.
+      dep.fwd['push'](watch);
+      dep_upd_bool_attr(watch); // update now.
+    }
+  }
+
+  function attr_literal_class(node, scope, cls) {
+    if (log_spawn) console.log("[a] literal class: "+sym_list[tpl[p+1]]);
+    cls['push'](sym_list[tpl[p+1]]);
+    p += 2;
+  }
+
+  function attr_bound_class(node, scope, cls) {
+    p += 1;
+    var dep = resolve_expr(scope);
+    if (log_spawn) console.log("[a] bound class:", dep);
+    if (dep.wait<0) {
+      // constant value.
+      var val = dep.val;
+      var classes = to_text(val);
+      if (classes) cls['push'](classes); // class text.
+    } else {
+      // varying value.
+      var watch = { val:null, wait:0, fwd:[], fn:dep_upd_bound_classes, node:node, src_dep:dep, old_val:'' }; // dep.
+      dep.fwd['push'](watch);
+      dep_upd_bound_classes(watch); // update now.
+    }
+  }
+
+  function attr_cond_class(node, scope, cls) {
+    var name = sym_list[tpl[p+1]];
+    p += 2;
+    var dep = resolve_expr(scope);
+    if (log_spawn) console.log("[a] conditional class:", name, dep);
+    if (dep.wait<0) {
+      // constant value.
+      if (is_true(dep.val)) cls['push'](name);
+    } else {
+      // varying value.
+      var watch = { val:null, wait:0, fwd:[], fn:dep_upd_cond_class, node:node, src_dep:dep, cls_name:name }; // dep.
+      dep.fwd['push'](watch);
+      dep_upd_cond_class(watch); // update now.
+    }
+  }
+
+  function attr_bound_style(node, scope) {
+  }
+
+  var attr_ops = [
+    attr_literal_text,
+    attr_literal_bool,
+    attr_bound_text,
+    attr_bound_bool,
+    attr_literal_class,
+    attr_bound_class,
+    attr_cond_class,
+    attr_bound_style,
+  ];
+
   function create_tag(doc, parent, after, scope) {
     var tag = sym_list[tpl[p++]];
     var nattrs = tpl[p++];
@@ -589,99 +696,9 @@ var log_deps = true;
     // apply attributes and bindings.
     // these are sorted (grouped) by type in the compiler.
     while (nattrs--) {
-      switch (tpl[p]) {
-        case 0:
-          // literal text attribute.
-          if (log_spawn) console.log("[a] literal text: "+sym_list[tpl[p+1]]+" = "+sym_list[tpl[p+2]]);
-          node['setAttribute'](sym_list[tpl[p+1]], sym_list[tpl[p+2]]);
-          p += 3;
-          break;
-        case 1:
-          // literal boolean attribute.
-          if (log_spawn) console.log("[a] set boolean: "+sym_list[tpl[p+1]]+" = "+sym_list[tpl[p+2]]);
-          node[sym_list[tpl[p+1]]] = !! tpl[p+2]; // cast to bool.
-          p += 3;
-          break;
-        case 2:
-          // bound text attribute.
-          var name = sym_list[tpl[p+1]];
-          if (log_spawn) console.log("[a] bound text: "+sym_list[tpl[p+1]]);
-          p += 2;
-          var dep = resolve_expr(scope);
-          if (dep.wait<0) {
-            // constant value.
-            var val = dep.val;
-            if (val != null) { // or undefined.
-              node['setAttribute'](name, is_text[typeof(val)] ? val : '');
-            }
-          } else {
-            // varying value.
-            var watch = { val:null, wait:0, fwd:[], fn:dep_upd_text_attr, node:node, src_dep:dep, attr_name:name }; // dep.
-            dep.fwd['push'](watch);
-            dep_upd_text_attr(watch); // update now.
-          }
-          break;
-        case 3:
-          // bound boolean attribute.
-          var name = sym_list[tpl[p+1]];
-          if (log_spawn) console.log("[a] bound boolean: "+sym_list[tpl[p+1]]);
-          p += 2;
-          var dep = resolve_expr(scope);
-          if (dep.wait<0) {
-            // constant value.
-            node[name] = !! is_true(dep.val); // cast to bool.
-          } else {
-            // varying value.
-            var watch = { val:null, wait:0, fwd:[], fn:dep_upd_bool_attr, node:node, src_dep:dep, attr_name:name }; // dep.
-            dep.fwd['push'](watch);
-            dep_upd_bool_attr(watch); // update now.
-          }
-          break;
-        case 4:
-          // literal class.
-          if (log_spawn) console.log("[a] literal class: "+sym_list[tpl[p+1]]);
-          cls['push'](sym_list[tpl[p+1]]);
-          p += 2;
-          break;
-        case 5:
-          // bound classes (text)
-          p += 1;
-          var dep = resolve_expr(scope);
-          if (log_spawn) console.log("[a] bound class:", dep);
-          if (dep.wait<0) {
-            // constant value.
-            var val = dep.val;
-            var classes = is_text[typeof(val)] ? (''+val) : '';
-            if (classes) cls['push'](classes); // class text.
-          } else {
-            // varying value.
-            var watch = { val:null, wait:0, fwd:[], fn:dep_upd_bound_classes, node:node, src_dep:dep, old_val:'' }; // dep.
-            dep.fwd['push'](watch);
-            dep_upd_bound_classes(watch); // update now.
-          }
-          break;
-        case 6:
-          // conditional class (toggle)
-          var name = sym_list[tpl[p+1]];
-          p += 2;
-          var dep = resolve_expr(scope);
-          if (log_spawn) console.log("[a] conditional class:", name, dep);
-          if (dep.wait<0) {
-            // constant value.
-            if (is_true(dep.val)) cls['push'](name);
-          } else {
-            // varying value.
-            var watch = { val:null, wait:0, fwd:[], fn:dep_upd_cond_class, node:node, src_dep:dep, cls_name:name }; // dep.
-            dep.fwd['push'](watch);
-            dep_upd_cond_class(watch); // update now.
-          }
-          break;
-        default:
-          // can't recover from encoding errors.
-          throw 2; // new Error("bad attribute binding op: "+tpl[p]+" at "+p);
-      }
+      attr_ops[tpl[p]](node, scope, cls);
     }
-    if (cls['length']) node['className'] += cls['join'](' ');
+    if (cls['length']) node['className'] = cls['join'](' ');
     // - htmlFor
     // - style
     insert_after(parent, after, node);
@@ -694,12 +711,13 @@ var log_deps = true;
 
   function create_component(doc, parent, after, scope) {
     var tpl_id = tpl[p];
-    var nbinds = tpl[p+1];
-    p += 2;
-    if (log_spawn) console.log("create component:", tpl_id, nbinds);
+    var content_tpl = tpl[p+1];
+    var nbinds = tpl[p+2];
+    p += 3;
+    if (log_spawn) console.log("create component:", tpl_id, nbinds, content_tpl);
     // component has its own scope because it has its own namespace for bound names,
     // but doesn't have an independent lifetime (destroyed with the parent scope)
-    var com_scope = Scope(scope, null);
+    var com_scope = Scope(scope, content_tpl);
     for (var i=0; i<nbinds; i++) {
       var name = sym_list[tpl[p++]]; // TODO: flatten scopes into vectors (i.e. remove names)
       var dep = resolve_expr(scope);
@@ -708,12 +726,7 @@ var log_deps = true;
     }
     // pass through `parent` and `after` so the component tpl will be created inline,
     // as if the component were replaced with its contents.
-    // TODO: means every component instance will have [2, 0] at the end for empty contents.
-    if (log_spawn) console.log("inline contents: size "+tpl[p]+" length "+tpl[p+1]);
-    var size_of_tpl = tpl[p];
-    com_scope.contents = p + 1; // inline `contents` tpl is at p + 1.
     spawn_tpl(doc, parent, after, tpl_id, com_scope, com_scope.dom);
-    p += size_of_tpl; // skip over the inline tpl.
     // Must return a Scope to act as `after` for a subsequent Scope node.
     // The scope `dom` must contain all top-level DOM Nodes and Scopes in the tpl.
     return com_scope;
@@ -968,24 +981,45 @@ var log_deps = true;
     var save_p = p;
     p = tpl[tpl_id]; // get tpl offset inside tpl array.
     if (log_spawn) console.log("spawn tpl: "+tpl_id+" at "+p);
-    spawn_nodes(doc, parent, after, scope, capture);
+    if (tpl_id) { // zero is the empty template.
+      spawn_nodes(doc, parent, after, scope, capture);
+    }
     p = save_p; // must restore because templates can be recursive.
   }
 
 
   // -+-+-+-+-+-+-+-+-+ Init -+-+-+-+-+-+-+-+-+
 
+  function b93_decode(text) {
+    var res = [], len = text.length, i = 0, acc = 0, ch;
+    for (;i<len;i++) {
+      ch = text.charCodeAt(i);
+      if (ch >= 95) {
+        acc = (acc << 5) + (ch - 95); // high 5 bits.
+      } else {
+        if (ch > 92) --ch;
+        if (ch > 34) --ch;
+        res.push((acc * 61) + (ch - 32)); // low 61 vals.
+        acc = 0;
+      }
+    }
+    return res;
+  }
+
   function load_app() {
     var doc = document;
     var root_scope = Scope(null, null);
     if (debug) console.log(root_scope); // DEBUGGING.
-    spawn_tpl(doc, doc.body, null, 0, root_scope, null);
+    spawn_tpl(doc, doc.body, null, 1, root_scope, null);
   }
 
-  window['manglr'] = function (in_tpl, in_sym_list) {
-    tpl = in_tpl;
-    sym_list = in_sym_list;
-    // setTimeout(load_app, 0);
+  window['manglr'] = function (payload) {
+    tpl = b93_decode(payload[0]); // unpack tpl data to an array of integers.
+    payload[0] = ''; // drop ref to the tpl string so it can be GC'd.
+    for (var i=2, num=tpl[0]; i<=num; i++) {
+      tpl[i] += tpl[i-1]; // make template offsets absolute (encoded relative)
+    }
+    sym_list = payload;
     load_app();
   };
 

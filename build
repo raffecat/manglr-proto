@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-./bin/manglr.js demo/dashboard.html demo/dash.js
+./bin/manglr demo/dashboard.html demo/dash.html
