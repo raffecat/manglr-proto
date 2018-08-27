@@ -1,15 +1,15 @@
-/* <~> Manglr 0.2 | by Andrew Towers | MIT License | https://github.com/raffecat/manglr-proto */
+/* <~> Manglr 0.3 | by Andrew Towers | MIT License | https://github.com/raffecat/manglr-proto */
 
 var debug = true;
 var log_expr = true;
 var log_spawn = false;
 var log_deps = true;
 
-(function(Node, Array, Object, Error){
+manglr = (function(Array, Object){
   "use strict";
 
   var hasOwn = Object['prototype']['hasOwnProperty'];
-  var nextSid = 1;
+  var next_sid = 1;
   var null_dep = { val:null, wait:-1 }; // dep.
   var json_re = new RegExp("^application\/json", "i");
   var sym_list; // Array: symbol strings.
@@ -20,6 +20,7 @@ var log_deps = true;
   var in_transaction = null;
   var dep_n = 1;
   var fragment;
+  var found_parent;
 
 
   // -+-+-+-+-+-+-+-+-+ Network -+-+-+-+-+-+-+-+-+
@@ -66,61 +67,60 @@ var log_deps = true;
 
   // -+-+-+-+-+-+-+-+-+ DOM Manipulation -+-+-+-+-+-+-+-+-+
 
-  function last_dom_node(scope) {
-    // walk backwards from `scope` following the chain of `bk` references
-    // until we find a DOM Node or a Scope that contains a DOM node.
-    while (scope !== null) {
-      // scan the nodes captured in the scope backwards for the last child.
-      var children = scope.dom;
-      for (var n=children['length']-1; n>=0; n--) {
-        var child = children[n];
-        if (child instanceof Node) return child; // Node.
-        var found = last_dom_node(child); // Scope.
-        if (found) return found; // Node.
-      }
-      // follow the `bk` link to the previous child [Node or Scope]
-      var prev = scope.bk;
-      if (prev instanceof Node) return prev; // Node.
-      scope = prev; // Scope.
-    }
-    // did not find a DOM node inside `after` or any previous sibling of `after`.
-    return null;
-  }
-
-  function insert_after(dom_parent, after, node) {
-    // insert after the provided insertion point, for if/repeat updates.
-    // `after` can be a DOM Node or a Scope.
-    var prev_dom = (after instanceof Node) ? after : last_dom_node(after); // Scope|null -> Node|null
-    // Using firstChild based on the assumption that an empty `after` scope, and
-    // empty predecessor scopes via `bk`, means we need to insert at the beginning of dom_parent.
-    // FIXME: but what if `after` is inside another scope with predecessors that have dom nodes?
-    dom_parent['insertBefore'](node, prev_dom ? prev_dom['nextSibling'] : dom_parent['firstChild']);
-  }
-
-  function ins_before_walk(scope, dom_parent, dom_before) {
-    // insert a scope's top-level DOM nodes before a DOM node.
-    var dom = scope.dom, n = dom.length;
-    while (n--) {
-      var node = dom[n]; // Node|Scope.
-      if (node instanceof Node) {
-        dom_parent['insertBefore'](node, dom_before);
-        dom_before = node;
-      } else {
-        dom_before = ins_before_walk(scope, dom_parent, dom_before);
+  function first_dom_node_in_tree(child) {
+    // search all contents of these nodes first.
+    for (; child; child = child.next_s) {
+      // if (debug) console.log("... search node:", child);
+      var found = child.dom;
+      if (found) return found;
+      var subtree = child.first;
+      if (subtree) {
+        if (debug) console.log("... entering sub-tree:", child);
+        found = first_dom_node_in_tree(subtree);
+        if (debug) console.log("... leaving sub-tree:", child);
+        if (found) return found;
       }
     }
-    return dom_before;
   }
 
-  function move_scope(scope, dom_parent, after) {
+  function first_dom_node_after(scope) {
+    // if (debug) console.log("first_dom_node_after:", scope);
+    found_parent = null;
+    for (;;) {
+      // always ignore the children of the starting scope (want a node _after_ those)
+      // always ignore the `dom` of the starting node (want a node _after_ this one)
+      // check all siblings that follow the starting node.
+      var found = first_dom_node_in_tree(scope.next_s);
+      if (found) {
+        if (debug) console.log("... FOUND:", found);
+        found_parent = found.parentNode;
+        return found;
+      }
+      // didn't find a dom node in any forward sibling of the scope.
+      // move up one level and check all siblings that follow the parent scope.
+      //  A [B] C D    <-- scope.up
+      //     1 [2] 3   <-- starting scope [2]
+      scope = scope.up;
+      if (debug) console.log("... go up to:", scope);
+      if (!scope) {
+        if (debug) console.log("... STOPPED - no parent DOM node found.");
+        return null;
+      }
+      if (scope.dom) {
+        // have arrived at a parent DOM node, therefore there are no other DOM nodes
+        // after the initial `scope` that are inside this parent node.
+        if (debug) console.log("... STOPPED at the parent DOM node:", scope);
+        found_parent = scope.dom;
+        return null;
+      }
+    }
+  }
+
+  function move_scope(scope) {
     // move the dom contents of a scope to a new position in the dom.
     // must walk the top-level nodes and scopes (and their top-level nodes)
-    if (debug) console.log("[e] move scope:", scope, parent, after);
-    // FIXME: has the same problem as insert_after: when `after` is inside another
-    // scope, we don't traverse upwards to find previous siblings in upper scopes.
-    var prev_dom = (after instanceof Node) ? after : last_dom_node(after); // Scope|null -> Node|null
-    var dom_before = prev_dom ? prev_dom['nextSibling'] : dom_parent['firstChild'];
-    ins_before_walk(scope, dom_parent, dom_before);
+    if (debug) console.log("[e] move scope:", scope);
+    // TODO.
   }
 
 
@@ -129,33 +129,48 @@ var log_deps = true;
   function new_scope(up, contents) {
     // a binding context for names lexically in scope.
     // find bound names in `b` or follow the `up` scope-chain.
-    var s = { up:up, dom:[], subs:[], binds:{}, contents:contents };
-    if (debug) s.id = 's'+(nextSid++);
-    if (up) up.subs['push'](s); // append self to parent scope.
+    var s = { up:up, next_s:null, prev_s:null, first:null, last:null, dom:null, binds:null, contents:contents };
+    if (debug) s.id = 's'+(next_sid++);
+    if (up) {
+      // append new scope to parent scope.
+      var behind = up.last;
+      s.prev_s = behind;
+      up.last = s;
+      if (behind) behind.next_s = s; else up.first = s;
+    }
     return s;
   }
 
-  function reset_scope(scope) {
+  function unlink(parent, node) {
+    var behind = node.prev_s, ahead = node.next_s;
+    if (behind) behind.next_s = ahead; else parent.first = ahead;
+    if (ahead) ahead.prev_s = behind; else parent.last = behind;
+  }
+
+  function link_before(parent, node, ahead) {
+    var behind = ahead ? ahead.prev_s : parent.last; // null -> append.
+    node.prev_s = behind;
+    node.next_s = ahead;
+    if (behind) behind.next_s = node; else parent.first = node;
+    if (ahead) ahead.prev_s = node; else parent.last = node;
+  }
+
+  function reset_scope(vnode) {
     // reset [destroy] all the spawned contents in the scope.
     // NB. don't clear `binds`, `up`, `contents` because the scope can be re-populated.
-    // remove the top-level DOM nodes.
-    var dom = scope.dom;
-    for (var i=0; i<dom['length']; i++) {
-      var node = dom[i]; // Node|Scope.
-      // ignore child scopes here, because they're also in `scope.subs`.
-      if (node instanceof Node) {
-        node['parentNode']['removeChild'](node);
-      }
+    var dom = vnode.dom;
+    if (dom) {
+      dom.parentNode.removeChild(dom);
+      vnode.dom = null; // GC.
     }
-    scope.dom['length'] = 0;
-    // reset all sub-scopes.
-    // TODO: don't need to remove dom from all sub-scopes [only top-level ones!]
-    var subs = scope.subs;
-    for (var i=0; i<subs['length']; i++) {
-      reset_scope(subs[i]);
+    for (var child = vnode.first; child; ) {
+      var next_s = child.next_s;
+      reset_scope(child);
+      child.next_s = child.prev_s = null; // GC.
+      child = next_s;
     }
-    // TODO: remove watches.
-    // Important because many of them are bound to outer scopes.
+    vnode.first = vnode.last = null; // GC.
+    // TODO: unlink all deps registered in each node.
   }
 
   function name_from_scope(scope, name) {
@@ -163,11 +178,11 @@ var log_deps = true;
     // TODO: scopes don't need dynamic names -> use vectors; `up` is a prefix.
     do {
       var binds = scope.binds;
-      if (hasOwn['call'](binds, name)) {
+      if (binds && hasOwn['call'](binds, name)) {
         if (log_expr) console.log("[e] name_from_scope: "+name+" -> ", binds[name]);
         return binds[name];
       }
-      scope = scope.up;
+      scope = scope.up; // TODO: stop at component boundary.
     } while (scope);
     // the name was not found in the scope chain, which is a compile-time
     // error and should not happen at run-time (even so, do not crash)
@@ -188,7 +203,7 @@ var log_deps = true;
   // -+-+-+-+-+-+-+-+-+ Dependency Updates -+-+-+-+-+-+-+-+-+
 
   function recursive_inc(dep) {
-    if (!dep.n) dep.n = dep_n++; // DEBUG.
+    if (debug && !dep.n) dep.n = dep_n++; // DEBUG.
     var old_wait = dep.wait++;
     if (log_deps) console.log("... dep #"+dep.n+" is now waiting for "+dep.wait);
     if (old_wait === 0) {
@@ -539,43 +554,12 @@ var log_deps = true;
   ];
 
   function resolve_expr(scope) {
-    return expr_ops[tpl[p++]](scope);
+    var op = tpl[p++];
+    return expr_ops[op](scope);
   }
 
 
   // -+-+-+-+-+-+-+-+-+ Templates -+-+-+-+-+-+-+-+-+
-
-  function create_text(doc, dom_parent, after, scope) {
-    // create a text node.
-    var node = doc['createTextNode'](sym_list[tpl[p++]]);
-    insert_after(dom_parent, after, node);
-    return node;
-  }
-
-  function dep_upd_text_node(dep) {
-    // update a DOM Text node from an input dep's value.
-    var val = dep.src_dep.val;
-    dep.node.data = to_text(val);
-  }
-
-  function create_bound_text(doc, dom_parent, after, scope) {
-    // create a bound text node.
-    var node = doc['createTextNode']('');
-    var dep = resolve_expr(scope);
-    if (dep.wait<0) {
-      // constant value.
-      // inline version of dep_upd_text_node.
-      var val = dep.val;
-      node.data = to_text(val);
-    } else {
-      // varying value.
-      var watch = { val:'', wait:0, fwd:[], fn:dep_upd_text_node, node:node, src_dep:dep }; // dep.
-      dep.fwd['push'](watch);
-      dep_upd_text_node(watch); // update now.
-    }
-    insert_after(dom_parent, after, node);
-    return node;
-  }
 
   function dep_upd_text_attr(dep) {
     // update a DOM Element attribute from an input dep's value.
@@ -761,147 +745,186 @@ var log_deps = true;
     attr_bound_style,
   ];
 
-  function create_tag(doc, dom_parent, after, scope) {
-    var tag = sym_list[tpl[p++]];
-    var nattrs = tpl[p++];
-    if (log_spawn) console.log("createElement: "+tag);
-    var node = doc['createElement'](tag);
-    var cls = [];
-    // apply attributes and bindings.
-    // these are sorted (grouped) by type in the compiler.
-    while (nattrs--) {
-      attr_ops[tpl[p]](node, scope, cls);
-    }
-    if (cls['length']) node['className'] = cls['join'](' ');
-    // - htmlFor
-    // - style
-    insert_after(dom_parent, after, node);
-    // passing null `after` because we use our own DOM node as `dom_parent`,
-    // so there is never a _previous sibling_ `after` node for our contents.
-    if (log_spawn) console.log("spawn children...");
-    spawn_nodes(doc, node, null, scope, null); // also null `capture`.
-    return node;
+  function dep_upd_text_node(dep) {
+    // update a DOM Text node from an input dep's value.
+    var val = dep.src_dep.val;
+    dep.node.data = to_text(val);
   }
 
-  function create_component(doc, dom_parent, after, scope) {
+  function create_text(up_scope, append_to) {
+    // create a DOM Text node with literal text.
+    var dom_scope = new_scope(up_scope, 0);
+    // create a Text Node.
+    var text = sym_list[tpl[p++]];
+    if (log_spawn) console.log("[s] createTextNode:", text);
+    var node = document.createTextNode(text);
+    // always build dom sub-trees by appending inside a document fragment.
+    append_to.appendChild(node);
+    // record the DOM node on the scope, so we can find and move it.
+    dom_scope.dom = node;
+  }
+
+  function create_bound_text(up_scope, append_to) {
+    // create a DOM Text node with a bound expression.
+    var dom_scope = new_scope(up_scope, 0);
+    var dep = resolve_expr(up_scope);
+    var text = (dep.wait < 0) ? to_text(dep.val) : "";
+    if (log_spawn) console.log("[s] createTextNode:", dep);
+    var node = document.createTextNode(text);
+    if (dep.wait >= 0) {
+      // bound text content.
+      var watch = { val:"", wait:0, fwd:[], fn:dep_upd_text_node, node:node, src_dep:dep }; // dep.
+      dep.fwd['push'](watch);
+      dep_upd_text_node(watch); // update now.
+    }
+    // always build dom sub-trees by appending inside a document fragment.
+    append_to.appendChild(node);
+    // record the DOM node on the scope, so we can find and move it.
+    dom_scope.dom = node;
+  }
+
+  function create_element(up_scope, append_to) {
+    // create a DOM Element node.
+    var dom_scope = new_scope(up_scope, up_scope.contents); // pass through component-level `contents`.
+    // create an Element Node.
+    var tag = sym_list[tpl[p++]];
+    if (log_spawn) console.log("[s] createElement:", tag);
+    var node = document.createElement(tag);
+    var nattrs = tpl[p++];
+    var cls = [];
+    // apply attributes and bindings (grouped by type)
+    while (nattrs--) {
+      attr_ops[tpl[p]](node, up_scope, cls);
+    }
+    if (cls.length) node.className = cls.join(' ');
+    // spawn any child scopes inside this dom_scope.
+    spawn_child_scopes(dom_scope, node);
+    // always build dom sub-trees by appending inside a document fragment.
+    append_to.appendChild(node);
+    // record the DOM node on the scope, so we can find and move it.
+    dom_scope.dom = node;
+  }
+
+  function create_component(up_scope, append_to) {
     var tpl_id = tpl[p];
     var content_tpl = tpl[p+1];
     var nbinds = tpl[p+2];
     p += 3;
-    if (log_spawn) console.log("create component:", tpl_id, nbinds, content_tpl);
+    if (log_spawn) console.log("create component:", tpl_id, content_tpl, nbinds);
     // component has its own scope because it has its own namespace for bound names,
     // but doesn't have an independent lifetime (destroyed with the parent scope)
-    var com_scope = new_scope(scope, content_tpl);
+    var com_scope = new_scope(up_scope, content_tpl); // pass in the instance `contents`.
+    com_scope.binds = {};
     for (var i=0; i<nbinds; i++) {
       var name = sym_list[tpl[p++]]; // TODO: flatten scopes into vectors (i.e. remove names)
-      var dep = resolve_expr(scope);
+      var dep = resolve_expr(up_scope);
       if (log_spawn) console.log("bind to component:", name, dep);
       com_scope.binds[name] = dep;
     }
-    // pass through `parent` and `after` so the component tpl will be created inline,
+    // pass through `append_to` so child dom nodes will be appended to that node
     // as if the component were replaced with its contents.
-    spawn_tpl(doc, dom_parent, after, tpl_id, com_scope, com_scope.dom);
-    // Must return a Scope to act as `after` for a subsequent Scope node.
-    // The scope `dom` must contain all top-level DOM Nodes and Scopes in the tpl.
-    return com_scope;
+    spawn_tpl(tpl_id, com_scope, append_to);
   }
 
-  function dep_upd_condition(dep) {
+  function dep_upd_condition(dep, o_append_to) {
     // create or destroy the `contents` based on boolean `value`.
     if (is_true(dep.src_dep.val)) {
       if (!dep.in_doc) {
         dep.in_doc = true;
         // spawn all dom nodes, bind watches to deps in the scope.
-        // pass through `parent` and `after` so the contents will be created inline.
-        spawn_tpl(document, dep.dom_parent, dep.ins_after, dep.body_tpl, dep.cond_scope, dep.cond_scope.dom);
+        spawn_tpl(dep.body_tpl, dep.cond_scope, o_append_to);
       }
     } else {
       if (dep.in_doc) {
         dep.in_doc = false;
-        // remove all [top-level] dom nodes and unbind all watches.
-        // NB. need a list: watches can be bound to parent scopes!
-        reset_scope(dep.cond_scope);
+        reset_scope(dep.cond_scope); // remove all DOM nodes and unlink all deps.
       }
     }
   }
 
-  function create_condition(doc, dom_parent, after, scope) {
+  function create_condition(up_scope, append_to) {
     // Creates a scope (v-dom) representing the contents of the condition node.
     // The scope toggles between active (has dom nodes) and inactive (empty).
     // TODO: must bind all locally defined names in the scope up-front.
-    // => things inside cond/repeat are conditionally active, but still exist.
+    // => controllers inside cond/repeat are conditionally active, but still exist.
     var body_tpl = tpl[p++];
-    var src_dep = resolve_expr(scope);
-    var cond_scope = new_scope(scope, scope.contents); // component `contents` available within `if` nodes.
+    var src_dep = resolve_expr(up_scope);
+    var cond_scope = new_scope(up_scope, up_scope.contents); // pass through component-level `contents`.
     // always create a dep to track the condition state (used for removal, if not updating)
-    var cond_dep = { val:null, wait:0, fwd:[], fn:dep_upd_condition, src_dep:src_dep, dom_parent:dom_parent,
-                     ins_after:after, body_tpl:body_tpl, cond_scope:cond_scope, in_doc:false }; // dep.
+    var cond_dep = { val:null, wait:0, fwd:[], fn:dep_upd_condition, src_dep:src_dep,
+                     body_tpl:body_tpl, cond_scope:cond_scope, in_doc:false }; // dep.
     if (src_dep.wait >= 0) src_dep.fwd['push'](cond_dep); // subscribe.
-    dep_upd_condition(cond_dep); // update now.
-    return cond_scope; // must return a Scope to act as `after` for a subsequent Scope node.
+    // FIXME: calls spawn_and_insert_tpl in the middle of populating `fragment`,
+    // and without passing through dom_parent (how will it derive dom_parent and dom_before?)
+    dep_upd_condition(cond_dep, append_to); // update now in `append_to` mode.
   }
 
-  function dep_upd_repeat(dep) {
-    var doc = document;
+  function dep_upd_repeat(dep, o_append_to) {
     var seq = dep.src_dep.val instanceof Array ? dep.src_dep.val : [];
-    var dom_parent = dep.dom_parent;
-    var after = dep.ins_after; // start at `ins_after` so our body_tpl will follow its DOM nodes.
     var body_tpl = dep.body_tpl;
     var bind_as = dep.bind_as;
     var rep_scope = dep.rep_scope;
-    var has = dep.has_subs;
-    var used = {};
-    rep_scope.dom['length'] = 0; // must rebuild for `insert_after` in following nodes.
-    rep_scope.subs['length'] = 0; // must rebuild the list of sub-scopes.
+    var have_keys = dep.have_keys;
+    var new_keys = {};
+    var next_scope = rep_scope.first; // first existing child scope (can be null)
     for (var i=0; i<seq['length']; i++) {
       var model = seq[i];
-      var key = model ? (model.id || i) : i; // KEY function.
-      used[key] = true;
+      var key = model ? (model._id || i) : i; // KEY function.
       var inst_scope;
-      if (hasOwn['call'](has, key)) {
-        inst_scope = has[key];
-        // retained: add it back to the list of sub-scopes.
-        rep_scope.dom['push'](inst_scope);
-        rep_scope.subs['push'](inst_scope);
-        // move the existing dom nodes into the correct place (if order has changed)
-        move_scope(inst_scope, dom_parent, after);
+      if (hasOwn['call'](have_keys, key)) {
+        inst_scope = have_keys[key];
+        if (inst_scope) {
+          // retained: move into place if necessary.
+          if (inst_scope === next_scope) {
+            // already in place: advance to the next existing scope (can be null)
+            next_scope = next_scope.next_s;
+          } else {
+            // unlink the existing instance scope.
+            unlink(rep_scope, inst_scope);
+            // insert it back in before next_scope.
+            link_before(rep_scope, inst_scope, next_scope);
+            // move the scope's dom nodes into the correct place.
+            move_scope(inst_scope);
+          }
+        }
       } else {
         // create a sub-scope with bind_as bound to the model.
-        inst_scope = new_scope(rep_scope, rep_scope.contents); // component `contents` available within `repeat` nodes.
-        inst_scope.binds[bind_as] = { val:model, wait:-1 }; // dep.
-        has[key] = inst_scope;
-        spawn_tpl(doc, dom_parent, after, body_tpl, inst_scope, inst_scope.dom);
-        rep_scope.dom['push'](inst_scope);
-        // NB. new scope adds itself to rep_scope.subs.
+        inst_scope = new_scope(null, rep_scope.contents); // pass through component-level `contents`.
+        inst_scope.up = rep_scope; // manually inserted in parent scope (below)
+        var binds = {};
+        binds[bind_as] = { val:model, wait:-1 }; // dep.
+        inst_scope.binds = binds;
+        have_keys[key] = inst_scope;
+        // link it in at the current place.
+        link_before(rep_scope, inst_scope, next_scope);
+        // spawn child scopes in the correct place.
+        spawn_tpl(body_tpl, inst_scope, o_append_to);
       }
-      after = inst_scope;
+      new_keys[key] = inst_scope;
     }
-    // destroy all unused sub-scopes.
-    for (var key in has) {
-      if (hasOwn['call'](has, key) && !hasOwn['call'](used, key)) {
-        var del_scope = has[key];
-        // remove dom nodes and unbind watches.
-        reset_scope(del_scope);
-        // discard the scope for GC.
-        delete has[key];
-      }
+    dep.have_keys = new_keys;
+    // destroy all remaining unused child scopes.
+    while (next_scope) {
+      var after = next_scope.next_s; // capture before unlink.
+      unlink(rep_scope, next_scope);
+      reset_scope(next_scope); // remove all DOM nodes and unlink all deps.
+      next_scope = after;
     }
   }
 
-  function create_repeat(doc, dom_parent, after, scope) {
-    // Creates a scope (v-dom) representing the contents of the repeat node.
+  function create_repeat(up_scope, append_to) {
+    // Creates a scope representing the contents of the repeat node.
     // When the expression value changes, iterates over the new value creating
-    // and destroying repeats to bring the view into sync with the value.
+    // and destroying child scopes to bring the view into sync with the value.
     var bind_as = sym_list[tpl[p++]]; // TODO: flatten scopes -> becomes an index.
     var body_tpl = tpl[p++];
-    var src_dep = resolve_expr(scope);
-    var rep_scope = new_scope(scope, scope.contents); // component `contents` available within `repeat` nodes.
+    var src_dep = resolve_expr(up_scope);
+    var rep_scope = new_scope(up_scope, up_scope.contents); // pass through component-level `contents`.
     // always create a dep to track the repeat state (used for removal, if not updating)
-    var rep_dep = { val:null, wait:0, fwd:[], fn:dep_upd_repeat, src_dep:src_dep, dom_parent:dom_parent, ins_after:after,
-                    body_tpl:body_tpl, bind_as:bind_as, rep_scope:rep_scope, has_subs:{} }; // dep.
+    var rep_dep = { val:null, wait:0, fwd:[], fn:dep_upd_repeat, src_dep:src_dep,
+                    body_tpl:body_tpl, bind_as:bind_as, rep_scope:rep_scope, have_keys:{} }; // dep.
     if (src_dep.wait >= 0) src_dep.fwd['push'](rep_dep); // subscribe.
-    dep_upd_repeat(rep_dep); // update now.
-    return rep_scope; // must return a Scope to act as `after` for a subsequent Scope node.
+    dep_upd_repeat(rep_dep, append_to); // update now in `append_to` mode.
   }
 
   function dep_bind_to_hash_change(dep) {
@@ -916,7 +939,7 @@ var log_deps = true;
     addEventListener('hashchange', hash_change, false);
   }
 
-  function create_router(doc, dom_parent, after, scope) {
+  function create_router(scope) {
     var bind_as = sym_list[tpl[p++]];
     var router = new Model(bind_as);
     scope.binds[bind_as] = router;
@@ -926,7 +949,7 @@ var log_deps = true;
     dep_bind_to_hash_change(route_dep); // avoids capturing doc, dom_parent, etc.
   }
 
-  function create_auth(doc, dom_parent, after, scope) {
+  function create_auth(scope) {
     var bind_as = sym_list[tpl[p++]];
     var auth = new Model(bind_as);
     scope.binds[bind_as] = auth;
@@ -967,7 +990,7 @@ var log_deps = true;
     });
   }
 
-  function create_store(doc, parent, after, scope) {
+  function create_store(scope) {
     var bind_as = sym_list[tpl[p++]];
     var get_url = sym_list[tpl[p++]];
     var auth_ref = sym_list[tpl[p++]];
@@ -987,7 +1010,7 @@ var log_deps = true;
   var dom_create = [
     create_text,       // 0  text
     create_bound_text, // 1  text
-    create_tag,        // 2  element
+    create_element,    // 2  element
     create_component,  // 3  scope
     create_condition,  // 4  scope
     create_repeat,     // 5  scope
@@ -996,30 +1019,32 @@ var log_deps = true;
     create_store,      // 8  <store>
   ];
 
-  function spawn_nodes(doc, dom_parent, after, scope, capture) {
+  function spawn_child_scopes(up_scope, append_to) {
     // spawn a list of children within a dom tag or template body.
     // in order to move scopes, they must capture their top-level nodes.
     var len = tpl[p++];
     for (var i=0; i<len; i++) {
       var op = tpl[p++];
-      var next = dom_create[op](doc, dom_parent, after, scope);
-      if (next) {
-        next.bk = after; // backwards link for finding previous DOM nodes.
-        if (capture) capture['push'](next); // capture top-level nodes in a scope.
-        after = next;
-      }
+      dom_create[op](up_scope, append_to);
     }
   }
 
-  function spawn_tpl(doc, dom_parent, after, tpl_id, scope, capture) {
+  function spawn_tpl(tpl_id, up_scope, o_append_to) {
     // cursor is shared state: no multiple returns, not going to return arrays, could pass an object?
-    var save_p = p;
-    p = tpl[tpl_id]; // get tpl offset inside tpl array.
-    if (log_spawn) console.log("spawn tpl: "+tpl_id+" at "+p);
+    if (log_spawn) console.log("spawn tpl: "+tpl_id);
     if (tpl_id) { // zero is the empty template.
-      spawn_nodes(doc, dom_parent, after, scope, capture);
+      var save_p = p;
+      p = tpl[tpl_id]; // get tpl offset inside tpl array.
+      spawn_child_scopes(up_scope, o_append_to || fragment);
+      p = save_p; // must restore because templates can be recursive.
+      if (!o_append_to) {
+        // insert the resulting nodes into the scope's `dom_parent`.
+        if (fragment.firstChild) {
+          var dom_before = first_dom_node_after(up_scope); // -> found_parent.
+          found_parent.insertBefore(fragment, dom_before);
+        }
+      }
     }
-    p = save_p; // must restore because templates can be recursive.
   }
 
 
@@ -1043,13 +1068,17 @@ var log_deps = true;
 
   function load_app() {
     var doc = document;
-    fragment = doc['createDocumentFragment']();
-    var root_scope = new_scope(null, null);
+    var body = doc.body;
+    var root_scope = new_scope(null, 0);
+    root_scope.binds = {};
+    root_scope.dom = body; // for `if` or `repeat` in the body tag.
     if (debug) console.log(root_scope); // DEBUGGING.
-    spawn_tpl(doc, doc.body, null, 1, root_scope, null);
+    fragment = doc['createDocumentFragment']();
+    spawn_tpl(1, root_scope, fragment);
+    body.insertBefore(fragment, body.firstChild);
   }
 
-  window['manglr'] = function (tpl_data, symbols) {
+  return function (tpl_data, symbols) {
     sym_list = symbols;
     tpl = b93_decode(tpl_data); // unpack tpl data to an array of integers.
     for (var i=2, num=tpl[0]; i<=num; i++) {
@@ -1058,4 +1087,4 @@ var log_deps = true;
     load_app();
   };
 
-})(Node, Array, Object, Error);
+})(Array, Object);

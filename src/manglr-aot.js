@@ -67,6 +67,7 @@ function sym(name) {
   return idx;
 }
 
+
 // ---- Structural AST Nodes ----
 
 // first build AST nodes describing the tree to compile (plugins can contribute)
@@ -100,7 +101,7 @@ function encode_named_nodes(tpl, binds) {
 const dom_ops = {
   text:            0,
   bound_text:      1,
-  tag:             2,
+  element:         2,
   component:       3,
   condition:       4,
   repeat:          5,
@@ -133,7 +134,7 @@ function DomTag(name, binds, contents) {
   this.contents = contents;
 }
 DomTag.prototype.encode = function (tpl) {
-  tpl.push(dom_ops.tag, sym(this.name), this.binds.length);
+  tpl.push(dom_ops.element, sym(this.name), this.binds.length);
   this.binds.forEach(n => n.encode(tpl)); // reduce and encode each binding.
   tpl.push(this.contents.length);
   this.contents.forEach(n => n.encode(tpl)); // reduce and encode contents.

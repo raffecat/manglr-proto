@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 mkdir -p dist
 rm -f dist/dash.html
-./bin/manglr demo/dashboard.html dist/dash.html
+./bin/manglr demo/dashboard.html dist/dash.html $@
