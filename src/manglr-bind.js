@@ -1,4 +1,4 @@
-/* <~> Manglr 0.3 | by Andrew Towers | MIT License | https://github.com/raffecat/manglr-proto */
+/* <~> Manglr 0.4 | by Andrew Towers | MIT License | https://github.com/raffecat/manglr-proto */
 
 var debug = true;
 var log_expr = true;
@@ -122,7 +122,9 @@ manglr = (function(Array, Object){
     // move the dom contents of a scope to a new position in the dom.
     // must walk the top-level nodes and scopes (and their top-level nodes)
     if (debug) console.log("[e] move scope:", scope);
-    // TODO.
+    // FIXME: use first_dom_node_after to find the insert-before point,
+    // then traverse to find the top-level dom nodes and use insertBefore
+    // to move them into place.
   }
 
 
@@ -202,7 +204,7 @@ manglr = (function(Array, Object){
       child = next_s;
     }
     vnode.first = vnode.last = null; // GC.
-    // TODO: unlink all deps registered in each node.
+    // FIXME: unlink all deps registered in each vnode.
   }
 
   function name_from_scope(scope, name) {
@@ -214,7 +216,7 @@ manglr = (function(Array, Object){
         if (log_expr) console.log("[e] name_from_scope: "+name+" -> ", binds[name]);
         return binds[name];
       }
-      scope = scope.up; // TODO: stop at component boundary.
+      scope = scope.up; // TODO: stop at component boundary (then need to pass in implicit binds)
     } while (scope);
     // the name was not found in the scope chain, which is a compile-time
     // error and should not happen at run-time (even so, do not crash)
@@ -368,7 +370,7 @@ manglr = (function(Array, Object){
             // dep that hadn't delivered its recursive_dec() yet. If that is the case, put
             // back one wait count (for the queue) and append the dep to the transaction queue.
             // Assert: must be inside a transaction here because src_dep.wait was > 0.
-            // TODO: don't do this if sub_dep is now inactive (has no upstream deps)
+            // TODO: don't do this if sub_dep is now inactive (has no upstream deps, or un-bound?)
             // else-case: something is broken, because waits cannot be > 0 outside a transaction.
             if (in_transaction) {
               sub_dep.wait = 1;
@@ -412,16 +414,7 @@ manglr = (function(Array, Object){
     for (var key in data) {
       if (hasOwn['call'](data, key)) {
         var dep = deps[key];
-        if (dep instanceof Model) {
-          // Model or Collection in Model field.
-          // FIXME: cannot happen, because every Model field is a slot-dep (as created below)
-          // that can hold a Model or raw data as its value.
-          // FIXME: problem with the design: load() is meant to load structured data
-          // into nested Models and Collections of Models; this means load() must find
-          // and traverse those things - can they be values in field deps?
-          // if not, how can you capture a ref to a Model in some Collection?
-          dep.load(data[key]);
-        } else if (dep) {
+        if (dep) {
           // Existing dep - update its value and mark dirty.
           dep.val = data[key];
           mark_dirty(dep);
@@ -823,7 +816,6 @@ manglr = (function(Array, Object){
     add_handler('t'+nid, function() {
       // the currently selected vnode (scope) is saved on the field_dep so we can
       // un-select it when another vnode becomes selected (TODO: replace with a binding?)
-      // TODO: won't work if field_dep can change e.g. field of model-ref in model.
       var old_sel = field_dep.tap_sel_current;
       if (old_sel !== scope) {
         if (old_sel) {
@@ -941,19 +933,15 @@ manglr = (function(Array, Object){
     if (is_true(dep.src_dep.val)) {
       if (!dep.in_doc) {
         dep.in_doc = true;
-        // spawn all dom nodes, bind watches to deps in the scope.
-        // FIXME: this means all of the spawn code can happen inside a dep update transaction,
-        // therefore all spawn code must use subscribe_dep to watch upstream deps. Is it
-        // better to defer this until after the transaction (and have it start another one?)
-        // That might work for cond, but will it work for repeat?
-        // spawn_tpl(dep.body_tpl, dep.cond_scope, o_append_to);
+        // Cannot run spawn code inside a dep update transaction (due to dep.fwd.push)
+        // Better to queue scopes for an update, and have them create all their contents against
+        // deps in the `ready` state: can use dep vals immediately, and avoids second DOM update.
         dep_upd_queue_spawn(dep.body_tpl, dep.cond_scope);
       }
     } else {
       if (dep.in_doc) {
         dep.in_doc = false;
-        // FIXME: this happens inside a dep transaction, so needs to use unsubscribe_dep.
-        // reset_scope(dep.cond_scope); // remove all DOM nodes and unlink all deps.
+        // Cannot clear scopes inside a dep update transaction (due to dep.fwd changes)
         dep_upd_queue_reset(dep.cond_scope);
       }
     }
@@ -976,12 +964,18 @@ manglr = (function(Array, Object){
   }
 
   function dep_upd_queue_spawn(body_tpl, inst_scope) {
+    // FIXME: proof of concept: defer spawn code until after the dep update transaction has finished.
+    // Instead of this, mark the scope and push it to a queue that runs at `in_transaction = null`
+    // Note that (in theory) a scope can flip between `to-spawn` and `to-reset` multiple times.
     setTimeout(function(){
       spawn_tpl(body_tpl, inst_scope);
     },0);
   }
 
   function dep_upd_queue_reset(inst_scope) {
+    // FIXME: proof of concept: defer reset until after the dep update transaction has finished.
+    // Instead of this, mark the scope and push it to a queue that runs at `in_transaction = null`
+    // Note that (in theory) a scope can flip between `to-spawn` and `to-reset` multiple times.
     setTimeout(function(){
       reset_scope(inst_scope);
     },0);
@@ -1025,13 +1019,9 @@ manglr = (function(Array, Object){
         have_keys[key] = inst_scope;
         // link it in at the current place.
         link_before(rep_scope, inst_scope, next_scope);
-        // spawn child scopes in the correct place.
-        // FIXME: this means all of the spawn code can happen inside a dep update transaction,
-        // therefore all spawn code must use subscribe_dep to watch upstream deps.
-        // It might be better to queue scopes for an update, and have them create all
-        // of their contents against deps in the `ready` state, i.e. can use their vals
-        // immediately, and they won't be pending changes (causing spurious DOM uppdates)
-        // spawn_tpl(body_tpl, inst_scope, o_append_to);
+        // Cannot run spawn code inside a dep update transaction (due to dep.fwd.push)
+        // Better to queue scopes for an update, and have them create all their contents against
+        // deps in the `ready` state: can use dep vals immediately, and avoids second DOM update.
         dep_upd_queue_spawn(body_tpl, inst_scope); // closure for loop.
       }
       new_keys[key] = inst_scope;
@@ -1041,8 +1031,7 @@ manglr = (function(Array, Object){
     while (next_scope) {
       var after = next_scope.next_s; // capture before unlink.
       unlink(rep_scope, next_scope);
-      // FIXME: this happens inside a dep transaction, so needs to use unsubscribe_dep.
-      // reset_scope(next_scope); // remove all DOM nodes and unlink all deps.
+      // Cannot clear scopes inside a dep update transaction (due to dep.fwd changes)
       dep_upd_queue_reset(next_scope); // closure for loop.
       next_scope = after;
     }
