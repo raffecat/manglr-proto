@@ -994,8 +994,8 @@ function find_inlines(in_node, src_dir) {
       if (tag === 'link') {
         var href, attrs = child.attributes;
         if (attrs['rel'] === 'stylesheet' && attrs['inline'] && (href=attrs['href'])) {
-          if (/^file:/.test(href)) href = href.substr(7); // remove "file://"
-          if (!/^[a-z]+:/.test(href)) {
+          if (/^file:\/\//.test(href)) href = href.substr(7); // remove "file://"
+          if (!/^[a-zA-Z]*:?\/\//.test(href)) {
             // no protocol: must be a local file.
             var filename = path.resolve(src_dir, href);
             if (exists(filename)) {
