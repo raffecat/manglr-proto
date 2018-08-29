@@ -425,10 +425,11 @@ class HTMLElement extends Node {
             return this._rawAttrs;
         const attrs = {};
         if (this.rawAttrs) {
-            const re = /\b([a-z][a-z0-9\-]*)\s*=\s*("([^"]+)"|'([^']+)'|(\S+))/ig;
+            // modified: parse attributes without a value as name="name" per HTML5
+            const re = /\b([a-z][a-z0-9\-]*)\s*(?:=\s*("([^"]+)"|'([^']+)'|(\S+)))?/ig;
             let match;
             while (match = re.exec(this.rawAttrs)) {
-                attrs[match[1]] = match[3] || match[4] || match[5];
+                attrs[match[1]] = match[3] || match[4] || match[5] || match[1];
             }
         }
         this._rawAttrs = attrs;
