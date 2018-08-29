@@ -1,5 +1,10 @@
 "use strict";
 
+const log_new = false;
+const log_out = false;
+
+const path = require('path');
+const fs = require('fs');
 const html_parser = require('../third-party/node-html-parser');
 const std_attr = new RegExp("^accept-charset$|^http-equiv$|^data-|^aria-");
 const hasOwn = Object.prototype.hasOwnProperty;
@@ -19,7 +24,7 @@ for (var k, s=bool_attr.split('|'), i=0; i<s.length; i++) { k=s[i]; bool_map[k.t
 // ---- build dom ----
 
 function parse_html(source) {
-  return html_parser.parse(source, {script:true, noscript:true, style:true, pre:true});
+  return html_parser.parse(source, {lowerCaseTagName:true, script:true, noscript:true, style:true, pre:true});
 }
 
 // ---- error reporting ----
@@ -43,12 +48,17 @@ const error_msgs = [
   'component requires an "@" attribute',                                  // 15
   'component "@" cannot be conditional or repeated',                      // 16
   'component "@" cannot have any child elements',                         // 17
+  'tap-select: incorrect syntax.\n  expecting: "(expr) in (model.field) [ class (class-name) ] [ auto ]",\n  but found: "@"\n  in tag:', // 18
+  'inline stylesheet: file not found: "@"',                               // 19
 ];
 
 const log = console.log;
 
 function error(node, n, name, err) {
-  console.log('manglr: '+(error_msgs[n]||n).replace(/@/g,name), node, err);
+  if (node instanceof NodeProxy) node = node._node; // use the DOM node.
+  const save_childNodes = node.childNodes; node.childNodes = [];
+  const tag = node.toString(); node.childNodes = save_childNodes;
+  console.log('manglr: '+(error_msgs[n]||n).replace(/@/g,name), tag, err ? err : '');
 }
 
 
@@ -105,9 +115,10 @@ const dom_ops = {
   component:       3,
   condition:       4,
   repeat:          5,
-  router:          6,
-  authentication:  7,
-  store:           8,
+  model:           6,
+  store:           7,
+  router:          8,
+  authentication:  9,
 };
 
 function DomText(text) {
@@ -187,6 +198,13 @@ AuthenticationNode.prototype.encode = function (tpl) {
   tpl.push(dom_ops.authentication, sym(this.bind_as));
 };
 
+function ModelNode(bind_as) {
+  this.bind_as = bind_as;
+}
+ModelNode.prototype.encode = function (tpl) {
+  tpl.push(dom_ops.model, sym(this.bind_as));
+};
+
 function StoreNode(bind_as, get_url, auth_ref) {
   this.bind_as = bind_as;
   this.get_url = get_url;
@@ -208,6 +226,7 @@ const attr_ops = {
   bound_class:       5,
   cond_class:        6,
   bound_style:       7,
+  tap_sel:           8,
 };
 
 function LiteralText(name, value) {
@@ -279,6 +298,17 @@ BoundStyle.prototype.encode = function (tpl) {
   this.expr.encode(tpl);
 };
 
+function TapSelect(cls, expr, field) {
+  this.cls = cls;
+  this.expr = expr;
+  this.field = field;
+}
+TapSelect.prototype.encode = function (tpl) {
+  tpl.push(attr_ops.tap_sel, sym(this.cls));
+  this.expr.encode(tpl);
+  this.field.encode(tpl);
+};
+
 
 // ---- Expression AST Nodes ----
 
@@ -288,10 +318,11 @@ const expr_ops = {
   scope_lookup:   2,
   concat_text:    3,
   equals:         4,
-  add:            5,
-  sub:            6,
-  mul:            7,
-  div:            8,
+  not_op:         5,
+  add:            6,
+  sub:            7,
+  mul:            8,
+  div:            9,
 };
 
 function Expr() {} // base interface for expr_ops.
@@ -332,6 +363,15 @@ EqualsOp.prototype = new Expr();
 EqualsOp.prototype.encode = function (tpl) {
   tpl.push(expr_ops.equals);
   this.left.encode(tpl);
+  this.right.encode(tpl);
+};
+
+function NotOp(right) {
+  this.right = right;
+}
+NotOp.prototype = new Expr();
+NotOp.prototype.encode = function (tpl) {
+  tpl.push(expr_ops.not_op);
   this.right.encode(tpl);
 };
 
@@ -429,6 +469,12 @@ NodeProxy.prototype.equals = function (left, right) {
   if (!(right instanceof Expr)) throw new Error("equals(left, right) the `right` must be an instance of Expr");
   return new EqualsOp(left, right);
 };
+NodeProxy.prototype.not = function (right) {
+  // create an operation that compares expressions.
+  if (this._ended) throw new Error("equals(left, right) too late to modify this node");
+  if (!(right instanceof Expr)) throw new Error("equals(left, right) the `right` must be an instance of Expr");
+  return new NotOp(right);
+};
 NodeProxy.prototype.cond = function (expr) {
   // add a condition to the node (i.e. wrap it in a condition)
   if (this._ended) throw new Error("cond(expr) too late to modify this node");
@@ -519,8 +565,8 @@ function find_literal_text(proxy, name) {
 builtins['router'] = function (node, proxy, comp_ctls) {
   if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, 'router'); return; }
   if (proxy._children['length']) { error(node, 17, 'router'); return; } // TODO: ignore DomText whitespace.
-  log("[ ROUTER:", proxy);
-  var id = find_literal_text(proxy, 'id');
+  if (log_new) log("[ ROUTER:", proxy);
+  var id = find_literal_text(proxy, 'name');
   if (!id) return null;
   comp_ctls.push(new RouterNode(id));
   return null; // no out_node.
@@ -528,8 +574,8 @@ builtins['router'] = function (node, proxy, comp_ctls) {
 
 builtins['authentication'] = function (node, proxy, comp_ctls) {
   if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, 'authentication'); return; }
-  log("[ AUTHENTICATION:", proxy);
-  var id = find_literal_text(proxy, 'id');
+  if (log_new) log("[ AUTHENTICATION:", proxy);
+  var id = find_literal_text(proxy, 'name');
   if (!id) return null;
   comp_ctls.push(new AuthenticationNode(id));
   // leave the authentication contents in-place, but wrap in a condition node.
@@ -541,11 +587,21 @@ builtins['authentication'] = function (node, proxy, comp_ctls) {
   return out_node;
 };
 
+builtins['model'] = function (node, proxy, comp_ctls) {
+  if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, 'model'); return; }
+  if (proxy._children['length']) { error(node, 17, 'model'); return; } // TODO: ignore DomText whitespace.
+  if (log_new) log("[ MODEL:", proxy);
+  var id = find_literal_text(proxy, 'name');
+  if (!id) return null;
+  comp_ctls.push(new ModelNode(id));
+  return null; // no out_node.
+};
+
 builtins['store'] = function (node, proxy, comp_ctls) {
   if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, 'store'); return; }
   if (proxy._children['length']) { error(node, 17, 'store'); return; } // TODO: ignore DomText whitespace.
-  log("[ STORE:", proxy);
-  var id = find_literal_text(proxy, 'id');
+  if (log_new) log("[ STORE:", proxy);
+  var id = find_literal_text(proxy, 'name');
   var get_url = find_literal_text(proxy, 'get');
   var auth_ref = find_literal_text(proxy, 'auth');
   if (!(id && get_url && auth_ref)) return;
@@ -557,7 +613,7 @@ builtins['store'] = function (node, proxy, comp_ctls) {
 // ---- modular conditions ----
 
 mod_conds['route'] = function (node, rest) {
-  log("[ ROUTE COND:", rest, node);
+  if (log_new) log("[ ROUTE COND:", rest, node);
   var route = node.implicit('@router', 'route');
   // TODO: need to trim `rest` before matching - text tpl can contain whitespace.
   return node.equals(route, node.text_tpl(rest));
@@ -567,14 +623,14 @@ mod_conds['route'] = function (node, rest) {
 // ---- directives ----
 
 directives['if'] = function (node, value) {
-  log("[ IF:", value, node);
+  if (log_new) log("[ IF:", value, node);
   // - compile the expression in the scope of `node`
   // - wrap the node in a condition node.
   node.cond(node.cond_expr(value));
 };
 
 directives['repeat'] = function (node, value) {
-  log("[ REPEAT:", value, node);
+  if (log_new) log("[ REPEAT:", value, node);
   // - compile the expression in the scope of the inner nodes [repeat creates its own scopes]
   // - wrap the inner nodes in a condition node.
   var args = value.split(' from ');
@@ -585,7 +641,7 @@ directives['repeat'] = function (node, value) {
 };
 
 directives['if-route'] = function (node, value) {
-  log("[ IF-ROUTE:", value, node);
+  if (log_new) log("[ IF-ROUTE:", value, node);
   var route = node.implicit('@router', 'route');
   // TODO: need to trim `value` before matching - text tpl can contain whitespace.
   node.cond(node.equals(route, node.text_tpl(value)));
@@ -606,19 +662,43 @@ directives['class'] = function (node, value) {
 
 directives['style'] = function (node, value) {
   // Must special-case "style" to merge with "style-" prefix directives.
-  throw new Error("TODO: parse style attribute into bindings");
+  log("TODO: parse the 'style' attribute");
+  node.bind_attr('style', node.text_tpl(value)); // bind as a text attribute for now.
 };
+
+directives['tap-select'] = function (node, value) {
+  // Makes an Element selectable; adds class "selected" when selected.
+  // assigns the value of [expr] to the specified model field when selected,
+  // and uses the current value of the model field to determine selected status.
+  // syntax: (expr) in (model.field) [ class (class-name) ] [ auto ]
+  const match = value.match(/^\s*(.+)\s+in\s+(\S+)(?:\s+class\s+(\S+))?(?:\s+auto)?\s*(.*)$/);
+  if (match) {
+    const [_, expr, field, cls, ex] = match;
+    if (ex) {
+      error(node, 18, value);
+    } else {
+      if (!cls) cls = 'selected';
+      log("[ TAP-SELECT:", expr, field, cls, ex);
+      var c_expr = parse_expr(expr);
+      var c_field = parse_expr(field);
+      node._binds.push(new TapSelect(cls, c_expr, c_field));
+    }
+  } else {
+    error(node, 18, value);
+  }
+};
+
 
 
 // ---- prefix handlers ----
 
 prefixes['class-'] = function(node, value, name) {
-  log("[ CLASS:", name, value, node);
+  if (log_new) log("[ CLASS:", name, value, node);
   node.cond_class(name, node.cond_expr(value));
 };
 
 prefixes['style-'] = function(node, value, name) {
-  log("[ STYLE:", name, value, node);
+  if (log_new) log("[ STYLE:", name, value, node);
   node.bind_style(name, node.expr(value));
 };
 
@@ -639,7 +719,7 @@ function rebuild_prefixes() {
 
 const tpl_re = new RegExp("([^{]*){?([^}]*)}?", "y");
 const mod_con_re = new RegExp("\\s*([A-Za-z][-A-Za-z0-9_]*):\\s*(.*)", "y"); // "cond-name: (expr)"
-const expr_re = new RegExp("\\s*(?:([@A-Za-z][A-Za-z0-9_.]*)|(\\+|\\-|\\*|\\/)|(.))", "y"); // (?:\\.\\w[\\w\\d_]*)*
+const expr_re = new RegExp("(\\s+)|([@A-Za-z][A-Za-z0-9_.]*)|(:=|.)", "y"); // (?:\\.\\w[\\w\\d_]*)*
 const norm_re = new RegExp("\\s+", "g")
 
 function norm_ws(text) {
@@ -655,49 +735,72 @@ const dy_ops = {
 
 // some tentative parser stuff that needs to be re-written properly...
 
-function parse_expr(text) {
-  log("[ parse_expr:", text, "]");
-  expr_re.lastIndex = 0;
-  var left = null;
-  var i = 0;
+function nud_expr(text, aft_op) {
   for (;;) {
+    var pos = expr_re.lastIndex;
     var match = expr_re.exec(text);
-    // log("match:", match);
-    if (!match) break; // end of input.
-    var path = match[1];
-    var dyadic = match[2];
-    var any = match[3];
-    if (path) {
-      if (left) {
-        // syntax error.
-        log("manglr: expecting an operator, in expression:", text);
-        return new ConstText("");
-      }
-      left = new ScopeLookup(path.split('.'));
-    } else if (dyadic) {
-      if (!left) {
-        // syntax error.
-        log("manglr: dyadic operator must follow an expression:", text);
-        return new ConstText("");
-      }
-      right = parse_expr();
-      left = new dy_ops[dyadic](left, right);
-    } else if (any && !/^\s+$/.test(any)) {
-      // FIXME: no, it backs up one char so it can match a space against the '.' x_x
-      log("manglr: syntax error in expression:", text, expr_re.lastIndex);
+    log("nud_expr:", JSON.stringify(match));
+    if (!match) {
+      if (aft_op) log(`manglr: expecting an operand after operator '${aft_op}', but found nothing, in expression: '${text}' at position ${pos}`);
+      else log(`manglr: expecting an expression, but found nothing, in expression: '${text}' at position ${pos}`);
       return new ConstText("");
-    } else {
-      // skipped whitespace and reached end of input.
-      break;
     }
-    if (i++ > 1000) throw "stop parse_expr";
+    if (match[1]) continue; // whitespace.
+    var path = match[2];
+    var oper = match[3];
+    if (path) {
+      if (path === 'not') {
+        const right = nud_expr(text, 'not');
+        return new NotOp(right);
+      } else {
+        return new ScopeLookup(path.split('.'));
+      }
+    } else {
+      log(`manglr: operator '${oper}' must follow an operand, in expression: '${text}' at position ${pos}`);
+      return new ConstText("");
+    }
   }
-  // end of input.
-  if (!left) {
-    log("manglr: expression cannot be empty:", text);
+  log("manglr: expression cannot be empty");
+  return new ConstText("");
+}
+
+function led_expr(text, aft_op) {
+  for (;;) {
+    var pos = expr_re.lastIndex;
+    var match = expr_re.exec(text);
+    log("led_expr:", JSON.stringify(match));
+    if (!match) {
+      log(`manglr: expecting an operand after operator '${aft_op}', but found nothing, in expression: '${text}' at position ${pos}`);
+      return new ConstText("");
+    }
+    if (match[1]) continue; // whitespace.
+    var dyadic = match[2] || match[3];
+    const oper = dy_ops[dyadic];
+    if (!oper) {
+      log(`manglr: expecting an operator, but found '${dyadic}', in expression: '${text}' at position ${pos}`);
+      return new ConstText("");
+    }
+    const right = led_expr(text, dyadic);
+    return new oper(left, right);
+  }
+  log(`manglr: expecting an operand after operator '${aft_op}', but found '${dyadic}', in expression: '${text}' at position ${pos}`);
+  return new ConstText("");
+}
+
+function parse_expr(text) {
+  if (log_new) log("[ parse_expr:", text, "]");
+  expr_re.lastIndex = 0;
+  var res = nud_expr(text);
+  for (;;) {
+    var pos = expr_re.lastIndex;
+    var match = expr_re.exec(text);
+    if (!match) break; // end of input.
+    if (match[1]) continue; // whitespace.
+    const any = match[2] || match[3];
+    log(`manglr: expected end of expression, but found '${any}', in expression: '${text}' at position ${pos}`);
     return new ConstText("");
   }
-  return left;
+  return res;
 }
 
 function parse_text_tpl(text) {
@@ -740,13 +843,14 @@ function parse_dom_node(node, c_tags, to_list, comp_ctls) {
   // note: one DOM node can yield multiple AST nodes! (e.g. body text placeholders)
   var nodeType = node.nodeType;
   if (nodeType == 1) { // Element.
-    var tag = node.tagName.toLowerCase();
+    var tag = node.tagName;
     if (tag === 'component' || tag === 'script') return; // elide from tpl.
     var tag_tpl = c_tags[tag];
     var proxy = new NodeProxy(node, tag_tpl);
     var attrs = node.attributes;
     for (const name of Object.keys(attrs)) {
       var value = attrs[name];
+      if (value === '""') value = ''; // node-html-parser bug?
       var name_lc = name.toLowerCase();
       // check if the attribute name matches any registered directives.
       var handler = directives[name_lc];
@@ -862,19 +966,50 @@ function parse_components(found) {
     const comp_ctls = []; // controller instances inside this component.
     const comp_els = parse_children(node, c_tags, comp_ctls);
     comp.tpl = comp_ctls.concat(comp_els);
-    log("[ COMPONENT:", comp.tag, comp.tpl);
+    if (log_new) log("[ COMPONENT:", comp.tag, comp.tpl);
   }
 }
 
-function find_body(node) {
+function find_tag(tag, node) {
   for (const child of node.childNodes) {
     if (child.nodeType === 1) {
-      if (child.tagName === 'body') {
+      if (child.tagName === tag) {
         return child;
       } else {
-        const b = find_body(child);
+        const b = find_tag(tag, child);
         if (b) return b;
       }
+    }
+  }
+}
+
+function exists(filename) {
+  try { fs.statSync(filename); return true; } catch (e) { return false; }
+}
+
+function find_inlines(in_node, src_dir) {
+  for (const child of in_node.childNodes) {
+    if (child.nodeType === 1) {
+      var tag = child.tagName;
+      if (tag === 'link') {
+        var href, attrs = child.attributes;
+        if (attrs['rel'] === 'stylesheet' && attrs['inline'] && (href=attrs['href'])) {
+          if (/^file:/.test(href)) href = href.substr(7); // remove "file://"
+          if (!/^[a-z]+:/.test(href)) {
+            // no protocol: must be a local file.
+            var filename = path.resolve(src_dir, href);
+            if (exists(filename)) {
+              var content = fs.readFileSync(filename, 'utf8');
+              child.tagName = 'style';
+              child.rawAttrs = '';
+              child.set_content([new html_parser.TextNode(content)]);
+            } else {
+              error(child, 19, filename);
+            }
+          }
+        }
+      }
+      find_inlines(child, src_dir);
     }
   }
 }
@@ -920,13 +1055,17 @@ function b93_decode(text) {
   return res;
 }
 
-function compile(source, manglr_rtl) {
+function compile(source, src_dir, manglr_rtl) {
   const doc_el = parse_html(source);
-  const html = doc_el.firstChild; // <html>
+  console.log(require('util').inspect(doc_el));
+  const html = find_tag('html', doc_el);
+  if (!html) throw new Error(`missing <html> tag in ${doc_el}`);
+  find_inlines(html, src_dir);
   // update the attribute prefix regex if register_prefix has been called.
   if (prefixes_dirty) rebuild_prefixes();
   // must find all component tags first, since they define custom tags.
-  const body = find_body(html);
+  const body = find_tag('body', html);
+  if (!body) throw new Error(`missing <body> tag in ${html}`);
   root_component.dom_node = body;
   var found = [root_component];
   find_components(body, found, root_component);
@@ -949,13 +1088,13 @@ function compile(source, manglr_rtl) {
   }
   // encode the tpl data as text.
   const js_enc = JSON.stringify(encoded);
-  console.log("=>", js_enc);
+  if (log_out) console.log("=>", js_enc);
   const tpl_data = b93_encode(encoded);
-  console.log("=>", JSON.stringify(tpl_data));
-  console.log("=>", tpl_data.length, 'vs', js_enc.length, (tpl_data.length / js_enc.length * 100).toFixed(1)+'%');
+  if (log_out) console.log("=>", JSON.stringify(tpl_data));
+  if (log_out) console.log("=>", tpl_data.length, 'vs', js_enc.length, (tpl_data.length / js_enc.length * 100).toFixed(1)+'%');
   const enc_check = b93_decode(tpl_data);
-  if (encoded.length !== enc_check.length) throw 8;
-  for (let x=0; x<encoded.length; x++) if (encoded[x] !== enc_check[x]) throw 9;
+  if (encoded.length !== enc_check.length) throw new Error("encoding error");
+  for (let x=0; x<encoded.length; x++) if (encoded[x] !== enc_check[x]) throw new Error("encoding error")
   // remove all children from the body and add scripts.
   body.set_content([]);
   html.removeWhitespace();

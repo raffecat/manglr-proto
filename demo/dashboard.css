@@ -164,6 +164,9 @@ body {
   top: 12px;
   left: 300px;
 }
+.order.selected {
+  background: red;
+}
 
 /*
  * Sign In Overlay

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require('fs');
+const path = require('path');
 const parser = require('../third-party/node-html-parser');
 const compiler = require('../src/manglr-aot');
 
@@ -10,9 +11,10 @@ const in_file = process.argv[2];
 const out_file = process.argv[3];
 if (!in_file || !out_file) { console.error("usage: manglr <in-html> <out-js>"); process.exit(1); }
 const source = fs.readFileSync(in_file, 'utf8');
+const src_dir = path.dirname(in_file);
 
 const rtl_file = is_dev ? '/../src/manglr-bind.js' : '/../dist/manglr.js';
 const manglr_rtl = fs.readFileSync(__dirname+rtl_file, 'utf8');
 
-const blob = compiler.compile(source, manglr_rtl);
+const blob = compiler.compile(source, src_dir, manglr_rtl);
 fs.writeFileSync(out_file, blob, 'utf8');

@@ -17,8 +17,10 @@ manglr = (function(Array, Object){
   var p = 0; // read position in tpl being spawned.
   var scheduled = false;
   var dirty_roots = [];
+  var tap_handlers = {};
   var in_transaction = null;
   var dep_n = 1;
+  var next_id = 0;
   var fragment;
   var found_parent;
 
@@ -42,7 +44,7 @@ manglr = (function(Array, Object){
         var code = req.status, data = req.responseText, ct = req.getResponseHeader('Content-Type');
         if (debug) console.log("REQUEST", req);
         req.onreadystatechange = null;
-        req = null;
+        req = null; // GC.
         var data;
         if (json_re.test(ct)) {
           try {
@@ -122,6 +124,36 @@ manglr = (function(Array, Object){
     if (debug) console.log("[e] move scope:", scope);
     // TODO.
   }
+
+
+  // -+-+-+-+-+-+-+-+-+ DOM Events -+-+-+-+-+-+-+-+-+
+
+  function tap_handler(event) {
+    var dom_target = event.target || event.srcElement; // IE 6-8 srcElement.
+    for (; dom_target; dom_target = dom_target.parentNode) {
+      var dom_id = dom_target.id;
+      if (dom_id) {
+        var list = tap_handlers['t'+dom_id];
+        if (list) {
+          for (var i=0; i<list.length; i++) {
+            if (list[i](event) === false) {
+              if (event.preventDefault) event.preventDefault(); else event.returnValue = false; // IE returnValue.
+              if (event.stopPropagation) event.stopPropagation(); else event.cancelBubble = true; // IE cancelBubble.
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function add_handler(nid, func) {
+    var list = tap_handlers[nid];
+    if (list) list.push(func); else tap_handlers[nid] = [func];
+  }
+
+  // dom_node.addEventListener('touchstart', tap_handler); // TODO: properly.
+  document.addEventListener('click', tap_handler, true);
 
 
   // -+-+-+-+-+-+-+-+-+ Scopes -+-+-+-+-+-+-+-+-+
@@ -529,6 +561,22 @@ manglr = (function(Array, Object){
     return dep;
   }
 
+  function dep_upd_not(dep) {
+    dep.val = ! dep.rhs.val;
+  }
+
+  function expr_not(scope) {
+    // create a dep that updates after the argument has updated.
+    var right = resolve_expr(scope);
+    if (log_expr) console.log("[e] not:", right);
+    var dep = { val:"", wait:0, fwd:[], fn:dep_upd_not, rhs:right }; // dep.
+    var ins = 0;
+    if (right.wait >= 0) { right.fwd['push'](dep); ++ins; } // depend on.
+    dep_upd_not(dep); // TODO: unless any input has "no value"
+    if (!ins) { dep.wait = -1; } // constant.
+    return dep;
+  }
+
   function expr_const_text() {
     var val = sym_list[tpl[p++]];
     if (log_expr) console.log("[e] const text: "+val);
@@ -547,6 +595,7 @@ manglr = (function(Array, Object){
     expr_scope_lookup,
     expr_concat_text,
     expr_equals,
+    expr_not,
     // expr_add,
     // expr_sub,
     // expr_mul,
@@ -731,18 +780,66 @@ manglr = (function(Array, Object){
     }
   }
 
-  function attr_bound_style(node, scope) {
+  function dep_upd_bound_style(dep) {
+    // update a DOM Element style from an input dep's value.
+    dep.dom_node.style[dep.name] = to_text(dep.src_dep.val);
+  }
+
+  function attr_bound_style(dom_node, scope) {
+    var name = sym_list[tpl[p+1]];
+    p += 2;
+    var dep = resolve_expr(scope);
+    if (log_spawn) console.log("[a] bound style:", name, dep);
+    if (dep.wait<0) {
+      // constant value.
+      dom_node.style[name] = to_text(dep.val);
+    } else {
+      // varying value.
+      var watch = { val:null, wait:0, fwd:[], fn:dep_upd_bound_style, dom_node:dom_node, src_dep:dep, name:name }; // dep.
+      dep.fwd['push'](watch);
+      dep_upd_bound_style(watch); // update now.
+    }
+  }
+
+  function attr_tap_sel(dom_node, scope) {
+    var cls = sym_list[tpl[p+1]];
+    p += 2;
+    var expr_dep = resolve_expr(scope);
+    var field_dep = resolve_expr(scope);
+    if (log_spawn) console.log("[a] tap select:", cls, expr_dep, field_dep);
+    var nid = dom_node.id || (dom_node.id = ('m'+next_id++)); // TODO: new id each respawn!
+    add_handler('t'+nid, function() {
+      // the currently selected vnode (scope) is saved on the field_dep so we can
+      // un-select it when another vnode becomes selected (TODO: replace with a binding?)
+      // TODO: won't work if field_dep can change e.g. field of model-ref in model.
+      var old_sel = field_dep.tap_sel_current;
+      if (old_sel !== scope) {
+        if (old_sel) {
+          var old_dom = old_sel.dom;
+          if (old_dom) remove_class(old_dom, field_dep.tap_sel_cls);
+        }
+        // make this element the selected element.
+        // sample the value of expr_dep and copy it to field_dep (set the selected value)
+        field_dep.val = expr_dep.val;
+        field_dep.tap_sel_current = scope;
+        field_dep.tap_sel_cls = cls;
+        mark_dirty(field_dep);
+        add_class(dom_node, cls); // should be done with a binding?
+      }
+    });
+    // TODO: append unbind func to the scope.
   }
 
   var attr_ops = [
-    attr_literal_text,
-    attr_literal_bool,
-    attr_bound_text,
-    attr_bound_bool,
-    attr_literal_class,
-    attr_bound_class,
-    attr_cond_class,
-    attr_bound_style,
+    attr_literal_text,  // 0
+    attr_literal_bool,  // 1
+    attr_bound_text,    // 2
+    attr_bound_bool,    // 3
+    attr_literal_class, // 4
+    attr_bound_class,   // 5
+    attr_cond_class,    // 6
+    attr_bound_style,   // 7
+    attr_tap_sel,       // 8
   ];
 
   function dep_upd_text_node(dep) {
@@ -789,20 +886,19 @@ manglr = (function(Array, Object){
     // create an Element Node.
     var tag = sym_list[tpl[p++]];
     if (log_spawn) console.log("[s] createElement:", tag);
-    var node = document.createElement(tag);
+    var dom_node = document.createElement(tag);
+    dom_scope.dom = dom_node; // dom_scope owns dom_node.
     var nattrs = tpl[p++];
     var cls = [];
     // apply attributes and bindings (grouped by type)
     while (nattrs--) {
-      attr_ops[tpl[p]](node, up_scope, cls);
+      attr_ops[tpl[p]](dom_node, dom_scope, cls);
     }
-    if (cls.length) node.className = cls.join(' ');
+    if (cls.length) dom_node.className = cls.join(' ');
     // spawn any child scopes inside this dom_scope.
-    spawn_child_scopes(dom_scope, node);
+    spawn_child_scopes(dom_scope, dom_node);
     // always build dom sub-trees by appending inside a document fragment.
-    append_to.appendChild(node);
-    // record the DOM node on the scope, so we can find and move it.
-    dom_scope.dom = node;
+    append_to.appendChild(dom_node);
   }
 
   function create_component(up_scope, append_to) {
@@ -1007,6 +1103,14 @@ manglr = (function(Array, Object){
     dep_load_store_items(store, get_url, items_dep);
   }
 
+  function create_model(scope) {
+    var bind_as = sym_list[tpl[p++]];
+    if (log_spawn) console.log("> MODEL "+bind_as);
+    var model = new Model(bind_as);
+    var deps = model._deps;
+    scope.binds[bind_as] = model;
+  }
+
   var dom_create = [
     create_text,       // 0  text
     create_bound_text, // 1  text
@@ -1014,9 +1118,10 @@ manglr = (function(Array, Object){
     create_component,  // 3  scope
     create_condition,  // 4  scope
     create_repeat,     // 5  scope
-    create_router,     // 6  <router>
-    create_auth,       // 7  <authentication>
-    create_store,      // 8  <store>
+    create_model,      // 6  <model>
+    create_store,      // 7  <store>
+    create_router,     // 8  <router>
+    create_auth,       // 9  <authentication>
   ];
 
   function spawn_child_scopes(up_scope, append_to) {
