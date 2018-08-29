@@ -249,6 +249,7 @@ manglr = (function(Array, Object){
   }
 
   function recursive_dec(dep) {
+    if (dep.wait < 1) throw 1; // assert: no decrement without increment first.
     var new_wait = --dep.wait;
     if (log_deps) console.log("... dep #"+dep.n+" is now waiting for "+new_wait);
     if (new_wait === 0) {
@@ -329,6 +330,8 @@ manglr = (function(Array, Object){
       // transaction or mark it dirty if not inside a transaction.
       if (in_transaction) {
         // Avoid extra work if the dep is already waiting on another dep (i.e. will update)
+        // Should increment sub_dep in this case if something upstream of src_dep will update,
+        // but if that were the case, then src_dep.wait would be > 0 (handled above)
         if (!sub_dep.wait) {
           // Mark sub_dep as waiting - now expecting an update (from the queue)
           recursive_inc(sub_dep);
@@ -504,7 +507,8 @@ manglr = (function(Array, Object){
       // Make a field dep that retrieves the value when the upstream changes.
       var watch = { val:null, wait:0, fwd:[], fn:dep_upd_field, src_dep:dep, field:name, old_val:null, copier:null }; // dep.
       dep_upd_field(watch); // TODO: unless any input has "no value"
-      if (dep.wait >= 0) dep.fwd['push'](watch); else watch.wait = -1; // constant.
+      if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+      if (dep.wait >= 0) dep.fwd.push(watch); else watch.wait = -1; // constant.
       dep = watch;
     }
     p += len;
@@ -536,7 +540,8 @@ manglr = (function(Array, Object){
     for (var i=0; i<len; i++) {
       var src = resolve_expr(scope);
       args['push'](src);
-      if (src.wait >= 0) { src.fwd['push'](dep); ++ins; } // depend on.
+      if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+      if (src.wait >= 0) { src.fwd.push(dep); ++ins; } // depend on.
     }
     dep_upd_concat(dep); // TODO: unless any input has "no value"
     if (!ins) { dep.wait = -1; } // constant.
@@ -554,8 +559,9 @@ manglr = (function(Array, Object){
     if (log_expr) console.log("[e] equals:", left, right);
     var dep = { val:"", wait:0, fwd:[], fn:dep_upd_equals, lhs:left, rhs:right }; // dep.
     var ins = 0;
-    if (left.wait >= 0) { left.fwd['push'](dep); ++ins; } // depend on.
-    if (right.wait >= 0) { right.fwd['push'](dep); ++ins; } // depend on.
+    if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+    if (left.wait >= 0) { left.fwd.push(dep); ++ins; } // depend on.
+    if (right.wait >= 0) { right.fwd.push(dep); ++ins; } // depend on.
     dep_upd_equals(dep); // TODO: unless any input has "no value"
     if (!ins) { dep.wait = -1; } // constant.
     return dep;
@@ -571,7 +577,8 @@ manglr = (function(Array, Object){
     if (log_expr) console.log("[e] not:", right);
     var dep = { val:"", wait:0, fwd:[], fn:dep_upd_not, rhs:right }; // dep.
     var ins = 0;
-    if (right.wait >= 0) { right.fwd['push'](dep); ++ins; } // depend on.
+    if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+    if (right.wait >= 0) { right.fwd.push(dep); ++ins; } // depend on.
     dep_upd_not(dep); // TODO: unless any input has "no value"
     if (!ins) { dep.wait = -1; } // constant.
     return dep;
@@ -719,7 +726,8 @@ manglr = (function(Array, Object){
     } else {
       // varying value.
       var watch = { val:null, wait:0, fwd:[], fn:dep_upd_text_attr, node:node, src_dep:dep, attr_name:name }; // dep.
-      dep.fwd['push'](watch);
+      if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+      dep.fwd.push(watch);
       dep_upd_text_attr(watch); // update now.
     }
   }
@@ -736,7 +744,8 @@ manglr = (function(Array, Object){
     } else {
       // varying value.
       var watch = { val:null, wait:0, fwd:[], fn:dep_upd_bool_attr, node:node, src_dep:dep, attr_name:name }; // dep.
-      dep.fwd['push'](watch);
+      if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+      dep.fwd.push(watch);
       dep_upd_bool_attr(watch); // update now.
     }
   }
@@ -759,7 +768,8 @@ manglr = (function(Array, Object){
     } else {
       // varying value.
       var watch = { val:null, wait:0, fwd:[], fn:dep_upd_bound_classes, node:node, src_dep:dep, old_val:'' }; // dep.
-      dep.fwd['push'](watch);
+      if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+      dep.fwd.push(watch);
       dep_upd_bound_classes(watch); // update now.
     }
   }
@@ -775,7 +785,8 @@ manglr = (function(Array, Object){
     } else {
       // varying value.
       var watch = { val:null, wait:0, fwd:[], fn:dep_upd_cond_class, node:node, src_dep:dep, cls_name:name }; // dep.
-      dep.fwd['push'](watch);
+      if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+      dep.fwd.push(watch);
       dep_upd_cond_class(watch); // update now.
     }
   }
@@ -796,7 +807,8 @@ manglr = (function(Array, Object){
     } else {
       // varying value.
       var watch = { val:null, wait:0, fwd:[], fn:dep_upd_bound_style, dom_node:dom_node, src_dep:dep, name:name }; // dep.
-      dep.fwd['push'](watch);
+      if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+      dep.fwd.push(watch);
       dep_upd_bound_style(watch); // update now.
     }
   }
@@ -871,7 +883,8 @@ manglr = (function(Array, Object){
     if (dep.wait >= 0) {
       // bound text content.
       var watch = { val:"", wait:0, fwd:[], fn:dep_upd_text_node, node:node, src_dep:dep }; // dep.
-      dep.fwd['push'](watch);
+      if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+      dep.fwd.push(watch);
       dep_upd_text_node(watch); // update now.
     }
     // always build dom sub-trees by appending inside a document fragment.
@@ -894,7 +907,8 @@ manglr = (function(Array, Object){
     while (nattrs--) {
       attr_ops[tpl[p]](dom_node, dom_scope, cls);
     }
-    if (cls.length) dom_node.className = cls.join(' ');
+    // must append, because attr_bound_class and attr_cond_class can update first.
+    if (cls.length) dom_node.className += cls.join(' ');
     // spawn any child scopes inside this dom_scope.
     spawn_child_scopes(dom_scope, dom_node);
     // always build dom sub-trees by appending inside a document fragment.
@@ -928,12 +942,19 @@ manglr = (function(Array, Object){
       if (!dep.in_doc) {
         dep.in_doc = true;
         // spawn all dom nodes, bind watches to deps in the scope.
-        spawn_tpl(dep.body_tpl, dep.cond_scope, o_append_to);
+        // FIXME: this means all of the spawn code can happen inside a dep update transaction,
+        // therefore all spawn code must use subscribe_dep to watch upstream deps. Is it
+        // better to defer this until after the transaction (and have it start another one?)
+        // That might work for cond, but will it work for repeat?
+        // spawn_tpl(dep.body_tpl, dep.cond_scope, o_append_to);
+        dep_upd_queue_spawn(dep.body_tpl, dep.cond_scope);
       }
     } else {
       if (dep.in_doc) {
         dep.in_doc = false;
-        reset_scope(dep.cond_scope); // remove all DOM nodes and unlink all deps.
+        // FIXME: this happens inside a dep transaction, so needs to use unsubscribe_dep.
+        // reset_scope(dep.cond_scope); // remove all DOM nodes and unlink all deps.
+        dep_upd_queue_reset(dep.cond_scope);
       }
     }
   }
@@ -949,10 +970,21 @@ manglr = (function(Array, Object){
     // always create a dep to track the condition state (used for removal, if not updating)
     var cond_dep = { val:null, wait:0, fwd:[], fn:dep_upd_condition, src_dep:src_dep,
                      body_tpl:body_tpl, cond_scope:cond_scope, in_doc:false }; // dep.
-    if (src_dep.wait >= 0) src_dep.fwd['push'](cond_dep); // subscribe.
-    // FIXME: calls spawn_and_insert_tpl in the middle of populating `fragment`,
-    // and without passing through dom_parent (how will it derive dom_parent and dom_before?)
+    if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+    if (src_dep.wait >= 0) src_dep.fwd.push(cond_dep); // subscribe.
     dep_upd_condition(cond_dep, append_to); // update now in `append_to` mode.
+  }
+
+  function dep_upd_queue_spawn(body_tpl, inst_scope) {
+    setTimeout(function(){
+      spawn_tpl(body_tpl, inst_scope);
+    },0);
+  }
+
+  function dep_upd_queue_reset(inst_scope) {
+    setTimeout(function(){
+      reset_scope(inst_scope);
+    },0);
   }
 
   function dep_upd_repeat(dep, o_append_to) {
@@ -994,7 +1026,13 @@ manglr = (function(Array, Object){
         // link it in at the current place.
         link_before(rep_scope, inst_scope, next_scope);
         // spawn child scopes in the correct place.
-        spawn_tpl(body_tpl, inst_scope, o_append_to);
+        // FIXME: this means all of the spawn code can happen inside a dep update transaction,
+        // therefore all spawn code must use subscribe_dep to watch upstream deps.
+        // It might be better to queue scopes for an update, and have them create all
+        // of their contents against deps in the `ready` state, i.e. can use their vals
+        // immediately, and they won't be pending changes (causing spurious DOM uppdates)
+        // spawn_tpl(body_tpl, inst_scope, o_append_to);
+        dep_upd_queue_spawn(body_tpl, inst_scope); // closure for loop.
       }
       new_keys[key] = inst_scope;
     }
@@ -1003,7 +1041,9 @@ manglr = (function(Array, Object){
     while (next_scope) {
       var after = next_scope.next_s; // capture before unlink.
       unlink(rep_scope, next_scope);
-      reset_scope(next_scope); // remove all DOM nodes and unlink all deps.
+      // FIXME: this happens inside a dep transaction, so needs to use unsubscribe_dep.
+      // reset_scope(next_scope); // remove all DOM nodes and unlink all deps.
+      dep_upd_queue_reset(next_scope); // closure for loop.
       next_scope = after;
     }
   }
@@ -1019,7 +1059,8 @@ manglr = (function(Array, Object){
     // always create a dep to track the repeat state (used for removal, if not updating)
     var rep_dep = { val:null, wait:0, fwd:[], fn:dep_upd_repeat, src_dep:src_dep,
                     body_tpl:body_tpl, bind_as:bind_as, rep_scope:rep_scope, have_keys:{} }; // dep.
-    if (src_dep.wait >= 0) src_dep.fwd['push'](rep_dep); // subscribe.
+    if (in_transaction) throw 2; // assert: cannot fwd.push inside a transaction.
+    if (src_dep.wait >= 0) src_dep.fwd.push(rep_dep); // subscribe.
     dep_upd_repeat(rep_dep, append_to); // update now in `append_to` mode.
   }
 
