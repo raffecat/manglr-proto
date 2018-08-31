@@ -1,9 +1,9 @@
 /* <~> Manglr 0.4 | by Andrew Towers | MIT License | https://github.com/raffecat/manglr-proto */
 
 var debug = true;
-var log_expr = true;
+var log_expr = false;
 var log_spawn = false;
-var log_deps = true;
+var log_deps = false;
 
 manglr = (function(Array, Object){
   "use strict";
@@ -27,7 +27,7 @@ manglr = (function(Array, Object){
 
   // -+-+-+-+-+-+-+-+-+ Network -+-+-+-+-+-+-+-+-+
 
-  function postJson(url, data, callback) {
+  function postJson(url, token, data, callback) {
     var tries = 0;
     post();
     function retry(ret) {
@@ -62,6 +62,7 @@ manglr = (function(Array, Object){
       };
       req.open('POST', location.protocol+'//'+location.host+url, true);
       req.setRequestHeader("Content-Type", "application/json; charset=UTF-8");
+      if (token) req.setRequestHeader("Authorization", "bearer "+token);
       req.send(JSON.stringify(data));
     }
   }
@@ -402,7 +403,7 @@ manglr = (function(Array, Object){
     if (hasOwn['call'](deps, key)) {
       return deps[key];
     } else {
-      var dep = { val:null, wait:0, fwd:[], dirty:false }; // dep.
+      var dep = mkdep(null);
       if (debug) dep._nom = key; // DEBUGGING.
       deps[key] = dep;
       return dep;
@@ -422,7 +423,7 @@ manglr = (function(Array, Object){
           // New root dep - create in ready state with the new value.
           // No need to mark it dirty because there are no listeners yet,
           // and new listeners will mark themselves dirty.
-          dep = { val:data[key], wait:0, fwd:[], dirty:false }; // dep.
+          dep = mkdep(data[key]);
           if (debug) dep._nom = key; // DEBUGGING.
           deps[key] = dep;
         }
@@ -444,30 +445,42 @@ manglr = (function(Array, Object){
   }
 
   function dep_upd_copy_value(dep) {
-    // Copy the value from another dep into this dep.
-    dep.val = dep.src_dep.val;
+    // Copy the value from one dep to another.
+    var to_dep = dep.val;
+    var from_dep = dep.arg;
+    to_dep.val = from_dep.val;
   }
 
   function dep_upd_field(dep) {
-    var new_val = dep.src_dep.val, copier = dep.copier;
-    if (new_val !== dep.old_val) {
+    // fires when the upstream dep's value changes.
+    // set dep.val to the value of some `field` of the upstream dep's value.
+    // if the upstream dep's value is a Model, its `field` will be another dep.
+    // in that case, we must subscribe to that dep and copy-out its value.
+    var new_val = dep.src_dep.val;
+    var copier = dep.copier;
+    if (new_val !== dep.old_upstream_val) {
       // Model or immutable data has changed (or swapping between these)
-      if (copier && copier.src_dep) {
-        // Must remove our copier from the old model-field dep.
-        unsubscribe_dep(copier.src_dep, copier);
+      dep.old_upstream_val = new_val;
+      if (copier) {
+        // Must remove our copier from the old model field's dep.
+        var from_dep = copier.arg;
+        if (from_dep) unsubscribe_dep(from_dep, copier);
       }
       if (new_val instanceof Model) {
-        // Subscribe a copier to the model-field dep to copy its value to our dep.
-        if (!copier) dep.copier = copier = { val:null, wait:0, fwd:[], fn:dep_upd_copy_value, src_dep:null }; // dep.
+        // Subscribe a copier to the model field's dep to copy its value to our dep.
         var from_dep = new_val.get(dep.field);
-        copier.src_dep = from_dep;
-        subscribe_dep(from_dep, copier); // can happen during transaction.
-        dep.val = from_dep.val; // update now.
+        if (from_dep) {
+          if (!copier) dep.copier = copier = mkdep(dep, dep_upd_copy_value, null);
+          copier.arg = from_dep; // update `from_dep`.
+          subscribe_dep(from_dep, copier); // can happen during transaction.
+          dep.val = from_dep.val; // update now.
+        } else {
+          dep.val = null; // no such field in the model.
+        }
       } else {
         // Update this dep from the new immutable data.
         dep.val = (new_val != null) ? new_val[dep.field] : null;
       }
-      dep.old_val = new_val;
     }
   }
 
@@ -834,6 +847,33 @@ manglr = (function(Array, Object){
     // TODO: append unbind func to the scope.
   }
 
+  function attr_submit_to(dom_node, scope) {
+    // applied to Form elements: submit the form data to a Model's `submit` action.
+    p += 1;
+    var expr_dep = resolve_expr(scope);
+    dom_node.addEventListener('submit', function(event) {
+      var model = (expr_dep instanceof Model) ? expr_dep : (expr_dep && expr_dep.val), submit;
+      if (model && typeof (submit=model['submit']) === 'function') {
+        event.preventDefault();
+        var data = {};
+        // TODO: clean this up - quick code to gather form data...
+        // TODO: textarea, select with multiple=true, list and number types.
+        var els = dom_node['elements'];
+        if (els) {
+          for (var i=0, n=els.length; i<n; i++) {
+            var inp = els[i], name = inp.name, value = inp.value;
+            if (name && value != null) {
+              data[name] = value;
+            } else if (name && inp instanceof HTMLSelectElement) {
+              data[name] = inp.selectedIndex >= 0 ? inp[inp.selectedIndex].value : null;
+            }
+          }
+        }
+        submit(model, data);
+      }
+    }, false);
+  }
+
   var attr_ops = [
     attr_literal_text,  // 0
     attr_literal_bool,  // 1
@@ -844,6 +884,7 @@ manglr = (function(Array, Object){
     attr_cond_class,    // 6
     attr_bound_style,   // 7
     attr_tap_sel,       // 8
+    attr_submit_to,     // 9
   ];
 
   function dep_upd_text_node(dep) {
@@ -912,7 +953,7 @@ manglr = (function(Array, Object){
     var content_tpl = tpl[p+1];
     var nbinds = tpl[p+2];
     p += 3;
-    if (log_spawn) console.log("create component:", tpl_id, content_tpl, nbinds);
+    if (log_spawn) console.log("[s] create component:", tpl_id, content_tpl, nbinds);
     // component has its own scope because it has its own namespace for bound names,
     // but doesn't have an independent lifetime (destroyed with the parent scope)
     var com_scope = new_scope(up_scope, content_tpl); // pass in the instance `contents`.
@@ -920,7 +961,6 @@ manglr = (function(Array, Object){
     for (var i=0; i<nbinds; i++) {
       var name = sym_list[tpl[p++]]; // TODO: flatten scopes into vectors (i.e. remove names)
       var dep = resolve_expr(up_scope);
-      if (log_spawn) console.log("bind to component:", name, dep);
       com_scope.binds[name] = dep;
     }
     // pass through `append_to` so child dom nodes will be appended to that node
@@ -1054,88 +1094,190 @@ manglr = (function(Array, Object){
   }
 
   function dep_bind_to_hash_change(dep) {
-    dep.val = location.hash;
-    function hash_change() {
-      var hash = location.hash;
-      if (hash !== dep.val) {
-        dep.val = hash;
-        mark_dirty(dep);
-      }
-    }
-    addEventListener('hashchange', hash_change, false);
+    // closure to capture `dep` for `hashchange` event.
+    addEventListener('hashchange', function(){ set_dep(dep, location.hash); }, false);
   }
 
   function create_router(scope) {
+    // Create a Router Controller in the local scope.
     var bind_as = sym_list[tpl[p++]];
     var router = new Model(bind_as);
     scope.binds[bind_as] = router;
-    var route_dep = { val:null, wait:0, fwd:[], dirty:false }; // dep.
+    var route_dep = mkdep(location.hash); // dep.
     if (debug) route_dep._nom = 'route';
     router._deps['route'] = route_dep;
     dep_bind_to_hash_change(route_dep); // avoids capturing doc, dom_parent, etc.
   }
 
+  function act_auth_submit(auth, data) {
+    // TODO: messy, uses public deps.
+    if (debug) console.log("SUBMIT:", data);
+    set_dep(auth._deps['submitting'], true);
+    set_dep(auth._deps['error'], false);
+    postJson(auth.auth_url, '', data, function (code, data) {
+      if (debug) console.log("manglr: authenticate:", auth.auth_url, code, data);
+      set_dep(auth._deps['submitting'], false);
+      if (code === 200 && data) {
+        data = data.d || data || {}; // unwrap quirky json.
+        var token = data[auth.token_path];
+        if (token) {
+          set_dep(auth.token_dep, token);
+          set_dep(auth._deps['auth_required'], false);
+        } else {
+          set_dep(auth._deps['error'], true);
+        }
+      } else {
+        set_dep(auth._deps['error'], true);
+      }
+    });
+  }
+
   function create_auth(scope) {
+    // Create an Authentication controller in the local scope.
     var bind_as = sym_list[tpl[p++]];
+    var auth_url = sym_list[tpl[p++]];
+    var token_path = sym_list[tpl[p++]];
     var auth = new Model(bind_as);
+    auth.auth_url = auth_url;
+    auth.token_path = token_path;
+    var ss = window.localStorage;
+    var token = (ss && ss.getItem && ss.getItem(bind_as)) || '';
+    auth.token_dep = mkdep(token);
     scope.binds[bind_as] = auth;
-    var auth_required = { val:false, wait:0, fwd:[], dirty:false }; // dep.
+    var auth_required = mkdep(!token);
     if (debug) auth_required._nom = 'auth_required';
     auth._deps['auth_required'] = auth_required;
+    auth._deps['submitting'] = mkdep(false);
+    auth._deps['error'] = mkdep(false);
+    auth.submit = act_auth_submit;
   }
 
-  function store_set_state(store, state) {
-    store.state = state;
-    var deps = store._deps;
-    var loading = (state == 0); // 0 = loading.
-    var error = (state == 1);   // 1 = error.
-    var loaded = (state == 2);  // 2 = loaded.
-    if (deps.loading.val !== loading) { deps.loading.val = loading; mark_dirty(deps.loading); }
-    if (deps.error.val !== error) { deps.error.val = error; mark_dirty(deps.error); }
-    if (deps.loaded.val !== loaded) { deps.loaded.val = loaded; mark_dirty(deps.loaded); }
+  function mkdep(val, fn, arg) {
+    return { val:val, wait:0, fwd:[], dirty:false, fn:(fn||null), arg:(arg||null) };
   }
 
-  function dep_load_store_items(store, get_url, items_dep) {
-    store_set_state(store, 0); // 0 = loading.
-    postJson(get_url, {}, function (code, data) {
-      if (debug) console.log("manglr: store fetch: "+get_url, code, data);
+  function set_dep(dep, val) {
+    if (dep.val !== val) {
+      dep.val = val;
+      mark_dirty(dep);
+    }
+  }
+
+  function copy_dep_and_watch(src, src_name, dest, dest_name, watcher) {
+    // Copy a dep from one object (or null) to another and update a watcher dep's subscription.
+    // TODO: messy; can dep following be done without so much indirection?
+    var new_dep = src ? src[src_name] : null;
+    var old_dep = dest[dest_name];
+    if (new_dep != old_dep) { // null == undefined.
+      if (old_dep) unsubscribe_dep(old_dep, watcher);
+      dest[dest_name] = new_dep;
+      if (new_dep) subscribe_dep(new_dep, watcher); // will update watcher.
+    }
+  }
+
+  function act_store_reload(store) {
+    // TODO: not linked up to anything yet.
+    set_dep(store.state_dep, 0); // transition to 0=loading state.
+  }
+
+  function load_store_items(store, token) {
+    var url = store.get_url.val;
+    postJson(url, token, {}, function (code, data) {
+      if (debug) console.log("manglr: store fetch: "+url, code, data);
       if (code === 200 && data) {
         data = data.d || data || {}; // unwrap quirky json.
         var items = null;
         if (data instanceof Array) items = data;
         else if (data['items'] instanceof Array) items = data['items']; // TODO: option (a path)
         if (items) {
-          items_dep.val = items || []; mark_dirty(items_dep);
-          store_set_state(store, 2); // 2 = loaded.
+          set_dep(store.items_dep, items || []);
+          set_dep(store.state_dep, 2); // 2=loaded.
         } else {
-          store_set_state(store, 1); // 1 = error.
+          set_dep(store.state_dep, 1); // 1=error.
         }
       } else {
-        store_set_state(store, 1); // 1 = error.
+        set_dep(store.state_dep, 1); // 1=error.
       }
     });
   }
 
+  function dep_upd_store_watcher(dep) {
+    var store = dep.arg; // Model from create_store.
+    if (store.state_dep.val === 0) {
+      // in "loading" state.
+      var token_dep = store.token_dep;
+      var token = token_dep ? token_dep.val : '';
+      if (!token_dep || token) {
+        // no auth requried, or have auth token.
+        load_store_items(store, token);
+      } else if (token_dep) {
+        // put the auth model into `auth_required` state.
+        // TODO: messy, uses public deps. use some kind of interface test?
+        var auth, deps, req;
+        if ((auth=store.auth) && (deps=auth._deps) && (req=deps['auth_required'])) {
+          set_dep(req, true);
+        }
+      }
+    }
+  }
+
+  function dep_upd_store_loading(dep, store) { dep.val = (store.state_dep.val === 0); }
+  function dep_upd_store_error(dep, store) { dep.val = (store.state_dep.val === 1); }
+  function dep_upd_store_loaded(dep, store) { dep.val = (store.state_dep.val === 2); }
+
+  function dep_upd_store_auth(dep) {
+    // when the `auth` expr changes, must subscribe to the new token_dep.
+    // following the `token_dep` avoids the need to queue pending requests.
+    // FIXME: very much an edge case, and adds considerable complexity.
+    var src_dep = dep.val;
+    var store = dep.arg;    // Model from create_store.
+    var auth = src_dep.val; // new `auth` model or `null`.
+    store.auth = auth;
+    copy_dep_and_watch(auth, 'token_dep', store, 'token_dep', store.watcher);
+  }
+
   function create_store(scope) {
+    // Create a Store instance in the local scope.
     var bind_as = sym_list[tpl[p++]];
-    var get_url = sym_list[tpl[p++]];
-    var auth_ref = sym_list[tpl[p++]];
-    if (log_spawn) console.log("> STORE "+bind_as);
     var store = new Model(bind_as);
+    store.get_url = resolve_expr(scope);
+    var auth = resolve_expr(scope); // TODO: always a Model, or can be a Dep → Model ?
+    if (debug) console.log("> STORE", bind_as, store.get_url, auth);
+    var state_dep = mkdep(0); // 0=loading
+    var items_dep = mkdep([]);
+    store.state_dep = state_dep;
+    store.items_dep = items_dep;
     var deps = store._deps;
-    store.state = 0; // 0 = loading.
-    scope.binds[bind_as] = store;
-    var items_dep = { val:[], wait:0, fwd:[], dirty:false }; // dep.
     deps['items'] = items_dep;
-    deps['loading'] = { val:true, wait:0, fwd:[], dirty:false }; // dep.
-    deps['error'] = { val:false, wait:0, fwd:[], dirty:false }; // dep.
-    deps['loaded'] = { val:false, wait:0, fwd:[], dirty:false }; // dep.
-    dep_load_store_items(store, get_url, items_dep);
+    deps['loading'] = mkdep(true, dep_upd_store_loading, store);
+    deps['error'] = mkdep(false, dep_upd_store_error, store);
+    deps['loaded'] = mkdep(false, dep_upd_store_loaded, store);
+    scope.binds[bind_as] = store;
+    // trigger load when token is ready and state == 0 (loading)
+    // TODO: could use state_dep as the watcher dep.
+    var watcher = mkdep(false, dep_upd_store_watcher, store);
+    store.watcher = watcher;
+    state_dep.fwd.push(watcher); // trigger on state change.
+    // TODO: messy, not happy about all this complexity.
+    if (auth instanceof Model) {
+      if (debug) console.log(".. auth is a model");
+      store.auth = auth;
+      store.token_dep = auth.token_dep;
+      if (store.token_dep) store.token_dep.fwd.push(watcher); // trigger on token change.
+      dep_upd_store_watcher(watcher); // update watcher now.
+    } else if (auth) {
+      // auth is a dep: must follow its changes.
+      if (debug) console.log(".. auth is a dep");
+      var auth_follow = mkdep(auth, dep_upd_store_auth, store); // auth.token_dep → watcher.
+      auth.fwd.push(auth_follow);
+      dep_upd_store_auth(auth_follow); // update now → will update watcher.
+    }
   }
 
   function create_model(scope) {
+    // Create a Model instance in the local scope.
     var bind_as = sym_list[tpl[p++]];
-    if (log_spawn) console.log("> MODEL "+bind_as);
+    if (debug) console.log("> MODEL "+bind_as);
     var model = new Model(bind_as);
     var deps = model._deps;
     scope.binds[bind_as] = model;

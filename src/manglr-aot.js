@@ -50,14 +50,14 @@ const error_msgs = [
   'component "@" cannot have any child elements',                         // 17
   'tap-select: incorrect syntax.\n  expecting: "(expr) in (model.field) [ class (class-name) ] [ auto ]",\n  but found: "@"\n  in tag:', // 18
   'inline stylesheet: file not found: "@"',                               // 19
+  'component attribute "@" cannot include {expr} placeholders',           // 20
 ];
 
 const log = console.log;
 
 function error(node, n, name, err) {
   if (node instanceof NodeProxy) node = node._node; // use the DOM node.
-  const save_childNodes = node.childNodes; node.childNodes = [];
-  const tag = node.toString(); node.childNodes = save_childNodes;
+  const tag = node.tagString; // opening tag only.
   console.log('manglr: '+(error_msgs[n]||n).replace(/@/g,name), tag, err ? err : '');
 }
 
@@ -98,7 +98,8 @@ function encode_named_nodes(tpl, binds) {
   for (var i=0; i<binds.length; i++) {
     var b = binds[i];
     if (b instanceof LiteralText) pairs.push(b.name, new ConstText(b.value));
-    if (b instanceof BoundText) pairs.push(b.name, b.expr);
+    else if (b instanceof BoundText) pairs.push(b.name, b.expr);
+    else throw "cannot encode Attribute Binding as an expression";
   }
   // encode the { name, expr } pairs.
   tpl.push(pairs.length/2);
@@ -132,6 +133,7 @@ DomText.prototype.encode = function (tpl) {
 function DomBoundText(expr) {
   // Bound text expression inside a DOM Element.
   this.expr = expr;
+  if (!expr instanceof Expr) throw "bad expr";
 }
 DomBoundText.prototype.encode = function (tpl) {
   // TODO: reduce here and encode as DomText if const?
@@ -167,6 +169,7 @@ DomComponent.prototype.encode = function (tpl) {
 
 function CondNode(expr, contents) {
   this.expr = expr;
+  if (!expr instanceof Expr) throw "bad expr";
   this.tpl_id = create_tpl(contents); // must reserve tpl slot before encoding begins.
 }
 CondNode.prototype.encode = function (tpl) {
@@ -177,6 +180,7 @@ CondNode.prototype.encode = function (tpl) {
 function RepeatNode(bind_as, expr, contents) {
   this.bind_as = bind_as;
   this.expr = expr;
+  if (!expr instanceof Expr) throw "bad expr";
   this.tpl_id = create_tpl(contents); // must reserve tpl slot before encoding begins.
 }
 RepeatNode.prototype.encode = function (tpl) {
@@ -191,11 +195,13 @@ RouterNode.prototype.encode = function (tpl) {
   tpl.push(dom_ops.router, sym(this.bind_as));
 };
 
-function AuthenticationNode(bind_as) {
+function AuthenticationNode(bind_as, auth_url, token_path) {
   this.bind_as = bind_as;
+  this.auth_url = auth_url;
+  this.token_path = token_path;
 }
 AuthenticationNode.prototype.encode = function (tpl) {
-  tpl.push(dom_ops.authentication, sym(this.bind_as));
+  tpl.push(dom_ops.authentication, sym(this.bind_as), sym(this.auth_url), sym(this.token_path));
 };
 
 function ModelNode(bind_as) {
@@ -209,9 +215,13 @@ function StoreNode(bind_as, get_url, auth_ref) {
   this.bind_as = bind_as;
   this.get_url = get_url;
   this.auth_ref = auth_ref;
+  if (!get_url instanceof Expr) throw "bad get_url";
+  if (!auth_ref instanceof Expr) throw "bad auth_ref";
 }
 StoreNode.prototype.encode = function (tpl) {
-  tpl.push(dom_ops.store, sym(this.bind_as), sym(this.get_url), sym(this.auth_ref));
+  tpl.push(dom_ops.store, sym(this.bind_as));
+  this.get_url.encode(tpl);
+  this.auth_ref.encode(tpl);
 };
 
 
@@ -227,6 +237,7 @@ const attr_ops = {
   cond_class:        6,
   bound_style:       7,
   tap_sel:           8,
+  submit_to:         9,
 };
 
 function LiteralText(name, value) {
@@ -250,6 +261,7 @@ function BoundText(name, expr) {
   // Attribute bound to a text expression.
   this.name = name;
   this.expr = expr;
+  if (!expr instanceof Expr) throw "bad expr";
 }
 BoundText.prototype.encode = function (tpl) {
   tpl.push(attr_ops.bound_text, sym(this.name));
@@ -259,6 +271,7 @@ BoundText.prototype.encode = function (tpl) {
 function BoundBool(name, expr) {
   this.name = name;
   this.expr = expr;
+  if (!expr instanceof Expr) throw "bad expr";
 }
 BoundBool.prototype.encode = function (tpl) {
   tpl.push(attr_ops.bound_bool, sym(this.name));
@@ -274,6 +287,7 @@ LiteralClass.prototype.encode = function (tpl) {
 
 function BoundClass(expr) {
   this.expr = expr;
+  if (!expr instanceof Expr) throw "bad expr";
 }
 BoundClass.prototype.encode = function (tpl) {
   tpl.push(attr_ops.bound_class);
@@ -283,6 +297,7 @@ BoundClass.prototype.encode = function (tpl) {
 function CondClass(name, expr) {
   this.name = name;
   this.expr = expr;
+  if (!expr instanceof Expr) throw "bad expr";
 }
 CondClass.prototype.encode = function (tpl) {
   tpl.push(attr_ops.cond_class, sym(this.name));
@@ -292,6 +307,7 @@ CondClass.prototype.encode = function (tpl) {
 function BoundStyle(name, expr) {
   this.name = name;
   this.expr = expr;
+  if (!expr instanceof Expr) throw "bad expr";
 }
 BoundStyle.prototype.encode = function (tpl) {
   tpl.push(attr_ops.bound_style, sym(this.name));
@@ -302,11 +318,21 @@ function TapSelect(cls, expr, field) {
   this.cls = cls;
   this.expr = expr;
   this.field = field;
+  if (!expr instanceof Expr) throw "bad expr";
 }
 TapSelect.prototype.encode = function (tpl) {
   tpl.push(attr_ops.tap_sel, sym(this.cls));
   this.expr.encode(tpl);
   this.field.encode(tpl);
+};
+
+function SubmitTo(expr) {
+  this.expr = expr;
+  if (!expr instanceof Expr) throw "bad expr";
+}
+SubmitTo.prototype.encode = function (tpl) {
+  tpl.push(attr_ops.submit_to);
+  this.expr.encode(tpl);
 };
 
 
@@ -425,6 +451,7 @@ function NodeProxy(node, tpl) {
   this._node = node;
   this._tpl = tpl; // null for HTML tags.
   this._binds = [];
+  this._bound = new Map();
   this._conds = [];
   this._repeats = [];
   this._children = [];
@@ -520,6 +547,9 @@ NodeProxy.prototype.bind_attr = function (name, expr) {
   if (this._ended) throw new Error("bind_attr(name, expr) too late to modify this node");
   if (typeof(name) !== 'string') throw new Error("bind_attr(name, expr) the `name` must be a string");
   if (!(expr instanceof Expr)) throw new Error("bind_attr(name, expr) the `expr` must be an instance of Expr");
+  if (this._bound.has(name)) { error(this._node, 21, name); return; }
+  this._bound.set(name, expr);
+  // TODO: should defer this until we know it's a HTML tag.
   if (!this._tpl && hasOwn.call(bool_map, name)) {
     // bind to a boolean property on an HTML DOM element.
     if (expr instanceof ConstText) {
@@ -551,15 +581,20 @@ NodeProxy.prototype.add_children = function (children) {
 
 // ---- built-in components ----
 
-function find_literal_text(proxy, name) {
-  var binds = proxy._binds;
-  for (var bind of binds) {
-    if (bind instanceof LiteralText && bind.name === name) {
-      return bind.value;
-    }
-  }
-  error(proxy._node, 15, name);
+function find_bound(proxy, name) {
+  const bound = proxy._bound.get(name);
+  if (bound) return bound;
+  error(proxy._node, 15, name); // missing binding.
   return null;
+}
+
+function find_literal_text(proxy, name) {
+  const bound = find_bound(proxy, name);
+  if (bound && !(bound instanceof ConstText)) {
+    error(proxy._node, 20, name); // must be literal.
+    return null;
+  }
+  return bound.value; // text content.
 }
 
 builtins['router'] = function (node, proxy, comp_ctls) {
@@ -575,9 +610,10 @@ builtins['router'] = function (node, proxy, comp_ctls) {
 builtins['authentication'] = function (node, proxy, comp_ctls) {
   if (proxy._repeats['length'] || proxy._conds['length']) { error(node, 16, 'authentication'); return; }
   if (log_new) log("[ AUTHENTICATION:", proxy);
-  var id = find_literal_text(proxy, 'name');
-  if (!id) return null;
-  comp_ctls.push(new AuthenticationNode(id));
+  var id = find_literal_text(proxy, 'name'); if (!id) return null;
+  var auth_url = find_literal_text(proxy, 'api'); if (!auth_url) return null;
+  var tok_path = find_literal_text(proxy, 'ret'); if (!tok_path) return null;
+  comp_ctls.push(new AuthenticationNode(id, auth_url, tok_path));
   // leave the authentication contents in-place, but wrap in a condition node.
   var out_node = null;
   if (proxy._children.length) {
@@ -602,8 +638,8 @@ builtins['store'] = function (node, proxy, comp_ctls) {
   if (proxy._children['length']) { error(node, 17, 'store'); return; } // TODO: ignore DomText whitespace.
   if (log_new) log("[ STORE:", proxy);
   var id = find_literal_text(proxy, 'name');
-  var get_url = find_literal_text(proxy, 'get');
-  var auth_ref = find_literal_text(proxy, 'auth');
+  var get_url = find_bound(proxy, 'get'); // text tpl, can include {expr}
+  var auth_ref = parse_expr(find_literal_text(proxy, 'auth')); // TODO: must be a valid path.
   if (!(id && get_url && auth_ref)) return;
   comp_ctls.push(new StoreNode(id, get_url, auth_ref));
   return null; // no out_node.
@@ -688,6 +724,12 @@ directives['tap-select'] = function (node, value) {
   }
 };
 
+directives['submit-to'] = function (node, value) {
+  // Make a <form> submit its input values to a component's `submit` action.
+  // TODO: should it accept an action instead? (i.e. to perform with implicit data from the form)
+  var c_target = parse_expr(value);
+  node._binds.push(new SubmitTo(c_target));
+};
 
 
 // ---- prefix handlers ----
@@ -1057,7 +1099,6 @@ function b93_decode(text) {
 
 function compile(source, src_dir, manglr_rtl) {
   const doc_el = parse_html(source);
-  console.log(require('util').inspect(doc_el));
   const html = find_tag('html', doc_el);
   if (!html) throw new Error(`missing <html> tag in ${doc_el}`);
   find_inlines(html, src_dir);
