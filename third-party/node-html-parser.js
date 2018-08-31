@@ -6,10 +6,14 @@
  *  Version 1.1.9a - MODIFIED
  *  - kMarkupPattern to allow multiple dashes.
  *  - toString to use HTML5 rules (no solidus on void elements)
+ *  - parse attributes without a value as name="name" per HTML5
+ *  - added tagString getter (opening tag without any contents)
+ *  - manglr lint warnings for missing tags
  */
 
 Object.defineProperty(exports, "__esModule", { value: true });
 const he_1 = require("he");
+const hasOwn = Object.prototype.hasOwnProperty;
 var NodeType;
 (function (NodeType) {
     NodeType[NodeType["ELEMENT_NODE"] = 1] = "ELEMENT_NODE";
@@ -170,6 +174,17 @@ class HTMLElement extends Node {
             return block.join('').trim().replace(/\s{2,}/g, ' ');
         })
             .join('\n').replace(/\s+$/, ''); // trimRight;
+    }
+    get tagString() {
+        // Encode the opening tag as a string.
+        const tag = this.tagName;
+        const attrs = this.rawAttrs ? ' ' + this.rawAttrs : '';
+        if (tag) {
+            return `<${tag}${attrs}>`;
+        }
+        else {
+            return '';
+        }
     }
     toString() {
         const tag = this.tagName;
@@ -429,7 +444,12 @@ class HTMLElement extends Node {
             const re = /\b([a-z][a-z0-9\-]*)\s*(?:=\s*("([^"]+)"|'([^']+)'|(\S+)))?/ig;
             let match;
             while (match = re.exec(this.rawAttrs)) {
-                attrs[match[1]] = match[3] || match[4] || match[5] || match[1];
+                if (hasOwn.call(attrs, match[1])) {
+                    // Lint warning.
+                    console.log("manglr: IGNORED duplicate attribute '"+match[1]+"' on tag "+this.tagString);
+                } else {
+                    attrs[match[1]] = match[3] || match[4] || match[5] || match[1];
+                }
             }
         }
         this._rawAttrs = attrs;
@@ -598,9 +618,10 @@ function parse(data, options) {
             var attrs = {};
             for (var attMatch; attMatch = kAttributePattern.exec(match[3]);)
                 attrs[attMatch[2]] = attMatch[4] || attMatch[5] || attMatch[6];
-            // console.log(attrs);
             if (!match[4] && kElementsClosedByOpening[currentParent.tagName]) {
                 if (kElementsClosedByOpening[currentParent.tagName][match[2]]) {
+                    // Lint warning.
+                    console.log("manglr: missing close tag for <"+match[2]+"> before "+currentParent.tagString);
                     stack.pop();
                     currentParent = arr_back(stack);
                 }
@@ -642,6 +663,8 @@ function parse(data, options) {
                     break;
                 }
                 else {
+                    // Lint warning.
+                    console.log("manglr: missing close tag for <"+match[2]+"> before "+currentParent.tagString);
                     // Trying to close current tag, and move on
                     if (kElementsClosedByClosing[currentParent.tagName]) {
                         if (kElementsClosedByClosing[currentParent.tagName][match[2]]) {
